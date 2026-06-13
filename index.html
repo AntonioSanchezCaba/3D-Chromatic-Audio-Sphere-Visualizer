@@ -10,13 +10,14 @@
 body{font-family:'Inter',sans-serif;background:#030308;overflow:hidden;height:100vh;color:#fff}
 #c{position:fixed;inset:0;z-index:1}
 
-/* ── GRADIENT FADE above panel — mobile only ────────────────────────────── */
+/* ── GRADIENT FADE above panel — mobile only (shown when panel open) ──── */
 #fade{
   display:none;position:fixed;left:0;right:0;z-index:9;pointer-events:none;
   height:90px;
   background:linear-gradient(to bottom,transparent,rgba(5,6,20,0.75));
 }
-@media(max-width:700px){#fade{display:block;bottom:55vh}}
+@media(max-width:700px){#fade{bottom:55vh}}
+#fade.panel-open{display:block}
 
 /* ── PANEL BASE ─────────────────────────────────────────────────────────── */
 #panel{
@@ -32,14 +33,19 @@ body{font-family:'Inter',sans-serif;background:#030308;overflow:hidden;height:10
 #panel::-webkit-scrollbar-track{background:transparent}
 #panel::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15);border-radius:4px}
 
-/* ── MOBILE PANEL ───────────────────────────────────────────────────────── */
+/* ── MOBILE PANEL — hidden by default, slides up on toggle ─────────────── */
 @media(max-width:700px){
   #panel{
     top:auto!important;bottom:0;left:0;right:0;
     width:100%!important;border-radius:22px 22px 0 0;
-    max-height:55vh;padding:0 18px 32px;
+    max-height:72vh;padding:0 18px 32px;
     border-left:none;border-right:none;border-bottom:none;
-    background:rgba(6,8,22,0.96);
+    background:rgba(6,8,22,0.97);
+    transform:translateY(100%);
+    transition:transform 0.38s cubic-bezier(0.4,0,0.2,1);
+  }
+  #panel.panel-open{
+    transform:translateY(0);
   }
 }
 
@@ -47,6 +53,24 @@ body{font-family:'Inter',sans-serif;background:#030308;overflow:hidden;height:10
 .drag-handle{display:none;justify-content:center;padding:12px 0 14px;flex-shrink:0;cursor:grab}
 .drag-handle span{width:40px;height:4px;background:rgba(255,255,255,.2);border-radius:4px}
 @media(max-width:700px){.drag-handle{display:flex}}
+
+/* ── FLOATING TOGGLE BUTTON (mobile only) ─────────────────────────────── */
+#toggleBtn{
+  display:none;
+  position:fixed;bottom:28px;right:22px;z-index:20;
+  width:54px;height:54px;border-radius:50%;
+  background:linear-gradient(135deg,#8b5cf6,#6366f1);
+  border:none;color:#fff;font-size:24px;cursor:pointer;
+  box-shadow:0 4px 24px rgba(99,102,241,.55);
+  align-items:center;justify-content:center;
+  transition:transform 0.22s, box-shadow 0.22s, background 0.22s;
+}
+#toggleBtn:active{transform:scale(0.93)}
+#toggleBtn.panel-open{
+  background:linear-gradient(135deg,#475569,#334155);
+  box-shadow:0 4px 16px rgba(0,0,0,.4);
+}
+@media(max-width:700px){#toggleBtn{display:flex;}}
 
 /* ── BRAND ──────────────────────────────────────────────────────────────── */
 .brand{margin-bottom:14px}
@@ -161,11 +185,24 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
   padding:12px 16px;font-size:11px;color:rgba(255,255,255,0.45);line-height:1.9}
 #hint b{color:rgba(255,255,255,0.75);font-weight:600}
 @media(max-width:700px){#hint{display:none}}
+
+/* ── LIVE BADGE pinned top-left on mobile when capturing ──────────────── */
+#mobileLive{
+  display:none;
+  position:fixed;top:16px;left:16px;z-index:15;
+  align-items:center;gap:7px;
+  padding:7px 13px;border-radius:20px;
+  background:rgba(74,222,128,0.12);border:1px solid rgba(74,222,128,0.25);
+  font-size:11px;font-weight:600;color:#4ade80;
+  backdrop-filter:blur(12px);
+}
+@media(max-width:700px){#mobileLive.visible{display:flex;}}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="fade"></div>
+<div id="mobileLive"><div class="pd"></div><span id="mobileLiveText">Live</span></div>
 
 <div id="panel">
   <div class="drag-handle"><span></span></div>
@@ -214,6 +251,9 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
   </div>
 </div>
 
+<!-- Floating toggle button — mobile only -->
+<button id="toggleBtn" aria-label="Toggle controls">⚙</button>
+
 <div id="hint"><b>Drag</b> to rotate &nbsp;·&nbsp; <b>Scroll</b> to zoom<br>Each note = unique color</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -257,7 +297,7 @@ renderer.setClearColor(0x030308,1);
 
 const scene=new THREE.Scene();
 const cam=new THREE.PerspectiveCamera(58,window.innerWidth/window.innerHeight,.1,300);
-cam.position.set(0,0,6); // camera stays fixed; we move the sphere instead
+cam.position.set(0,0,6);
 
 const PC=2000;
 const pG=new THREE.BufferGeometry();
@@ -298,12 +338,13 @@ for(let i=0;i<cnt;i++){
 }
 const smoothC=new Float32Array(cnt*3);smoothC.set(vcArr);
 
-// On mobile the panel covers the bottom 55vh, so shift the sphere up
-// so it's centered in the visible top 45vh area.
-// At z=6, FOV=58°: visible height ≈ 6.65 world units.
-// Center of top-45% area = 22.5vh from top = 1.83 world units above screen center.
+// Sphere position: centered by default; shift up when panel is open on mobile
 function setSpherePos(){
-  const y=window.innerWidth<=700?1.8:0;
+  const isMob=window.innerWidth<=700;
+  const panelVisible=isMob&&document.getElementById('panel').classList.contains('panel-open');
+  // At z=6, FOV=58°: visible height≈6.65 world units.
+  // Panel=72vh → sphere center should sit at ~36vh from top = 1.47 world units above center.
+  const y=panelVisible?1.5:0;
   sphere.position.y=y;
   gSph.position.y=y;
 }
@@ -324,7 +365,7 @@ canvas.addEventListener('wheel',e=>{e.preventDefault();cam.position.z=Math.max(3
 
 let t0=null;
 canvas.addEventListener('touchstart',e=>{
-  if(e.target.closest('#panel'))return;
+  if(e.target.closest('#panel')||e.target.closest('#toggleBtn'))return;
   if(e.touches.length===1)t0={x:e.touches[0].clientX,y:e.touches[0].clientY};
 },{passive:true});
 canvas.addEventListener('touchmove',e=>{
@@ -340,9 +381,30 @@ window.addEventListener('resize',()=>{
   cam.updateProjectionMatrix();
   renderer.setSize(window.innerWidth,window.innerHeight);
   setSpherePos();
-  const fade=document.getElementById('fade');
-  if(fade)fade.style.bottom=window.innerWidth<=700?'55vh':'auto';
 });
+
+// ─── PANEL TOGGLE ─────────────────────────────────────────────────────────────
+const toggleBtn=document.getElementById('toggleBtn');
+const panelEl=document.getElementById('panel');
+const fadeEl=document.getElementById('fade');
+let panelOpen=false;
+
+function togglePanel(){
+  panelOpen=!panelOpen;
+  if(panelOpen){
+    panelEl.classList.add('panel-open');
+    fadeEl.classList.add('panel-open');
+    toggleBtn.classList.add('panel-open');
+    toggleBtn.textContent='✕';
+  }else{
+    panelEl.classList.remove('panel-open');
+    fadeEl.classList.remove('panel-open');
+    toggleBtn.classList.remove('panel-open');
+    toggleBtn.textContent='⚙';
+  }
+  setSpherePos();
+}
+toggleBtn.addEventListener('click',togglePanel);
 
 // ─── AUDIO ────────────────────────────────────────────────────────────────────
 let audioCtx,analyser,freqData,audioEl,audioSrc,stream,active=false;
@@ -451,8 +513,7 @@ function updateUI(){
   NOTES.forEach(n=>{
     const el=document.getElementById('wc-'+n);if(!el)return;
     const h=NOTE_HUE[n],e=ENV[n];
-    if(e>.05){el.style.transform=`scale(${1+e*.3})`;el.style.boxShadow=`0 0 ${e*16}px hsl(${h},100%,60%)`;}
-    else{el.style.transform='scale(1)';el.style.boxShadow='none';}
+    if(e>.05){el.style.transform=`scale(${1+e*.3})`;el.style.boxShadow=`0 0 ${e*16}px hsl(${h},100%,60%)`;}    else{el.style.transform='scale(1)';el.style.boxShadow='none';}
   });
 }
 
@@ -475,9 +536,23 @@ const stopBtn=document.getElementById('stopBtn');
 const playBtn=document.getElementById('playBtn');
 const pauseBtn=document.getElementById('pauseBtn');
 const lvEl=document.getElementById('lv');
+const mobileLive=document.getElementById('mobileLive');
+const mobileLiveText=document.getElementById('mobileLiveText');
 
 const isMobile=/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 const canCapture=!isMobile&&!!(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia);
+
+function setLiveStatus(msg){
+  if(msg){
+    lvEl.innerHTML=`<div class="live"><div class="pd"></div>${msg}</div>`;
+    lvEl.style.display='block';
+    mobileLiveText.textContent=msg;
+    mobileLive.classList.add('visible');
+  }else{
+    lvEl.style.display='none';
+    mobileLive.classList.remove('visible');
+  }
+}
 
 function stopAll(){
   if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
@@ -485,7 +560,8 @@ function stopAll(){
   if(audioSrc)try{audioSrc.disconnect()}catch(e){}
   if(ytPlayer)try{ytPlayer.pauseVideo()}catch(e){}
   active=false;NOTES.forEach(n=>{ENV[n]=0});
-  stopBtn.disabled=true;lvEl.style.display='none';
+  stopBtn.disabled=true;
+  setLiveStatus(null);
 }
 
 async function captureTab(triggerBtn,fromYT){
@@ -505,8 +581,7 @@ async function captureTab(triggerBtn,fromYT){
     audioCtx.createMediaStreamSource(stream).connect(analyser);
     active=true;stream.getAudioTracks()[0].onended=stopAll;
     stopBtn.disabled=false;
-    lvEl.innerHTML='<div class="live"><div class="pd"></div>Capturing tab audio…</div>';
-    lvEl.style.display='block';
+    setLiveStatus('Capturing tab audio…');
     if(fromYT&&ytPlayer)try{ytPlayer.playVideo()}catch(e){}
   }catch(e){
     alert('Audio capture failed.\n\n• Select a tab in the dialog\n• Enable "Share tab audio"\n• Click Share');
@@ -534,9 +609,13 @@ playBtn.addEventListener('click',()=>{
   if(!audioEl)return;
   if(audioCtx.state==='suspended')audioCtx.resume();
   audioEl.play();active=true;
-  lvEl.innerHTML='<div class="live"><div class="pd"></div>Playing…</div>';lvEl.style.display='block';
+  setLiveStatus('Playing…');
 });
-pauseBtn.addEventListener('click',()=>{if(audioEl)audioEl.pause();active=false;lvEl.style.display='none';});
+pauseBtn.addEventListener('click',()=>{
+  if(audioEl)audioEl.pause();
+  active=false;
+  setLiveStatus(null);
+});
 
 // ─── YOUTUBE ──────────────────────────────────────────────────────────────────
 let ytPlayer=null,ytApiReady=false;
@@ -553,7 +632,7 @@ function loadYouTubeVideo(videoId){
   document.getElementById('ytWrap').style.display='block';
   document.getElementById('ytActions').style.display='block';
   if(ytPlayer&&ytPlayer.loadVideoById){ytPlayer.loadVideoById(videoId);}
-  else{ytPlayer=new YT.Player('yt-player',{videoId,playerVars:{autoplay:1,controls:1,modestbranding:1,rel:0,playsinline:1},events:{onReady:e=>e.target.playVideo()}});}
+  else{ytPlayer=new YT.Player('yt-player',{videoId,playerVars:{autoplay:1,controls:1,modestbranding:1,rel:0,playsinline:1},events:{onReady:e=>e.target.playVideo()}}});}
 }
 document.getElementById('ytLoad').addEventListener('click',()=>{
   const raw=document.getElementById('ytUrl').value.trim();if(!raw)return;
