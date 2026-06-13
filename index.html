@@ -103,7 +103,6 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
   box-shadow:0 4px 18px rgba(220,38,38,.3)}
 .btn-yt:hover{transform:translateY(-1px)}
 .btn:disabled{opacity:.25;cursor:not-allowed;transform:none!important;box-shadow:none!important}
-/* hide disabled Stop on mobile — cleans up dead space */
 @media(max-width:700px){#stopBtn:disabled{display:none}}
 .brow{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}
 #fi{display:none}
@@ -144,8 +143,6 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
   border-radius:9px;line-height:1.7}
 .mobile-note b{color:rgba(255,255,255,.6)}
 @media(max-width:700px){.mobile-note{display:block}}
-
-/* hide on mobile */
 @media(max-width:700px){#wheelSection,.desktop-sub{display:none}}
 
 /* ── WHEEL ──────────────────────────────────────────────────────────────── */
@@ -172,23 +169,18 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
 
 <div id="panel">
   <div class="drag-handle"><span></span></div>
-
   <div class="brand">
     <div>
       <h1>Chromatic Visualizer</h1>
       <p>Real-time musical note detection</p>
     </div>
   </div>
-
   <div id="spec"></div>
-
   <div class="lbl">Detected Notes</div>
   <div id="noteRow">
     <div class="waiting"><div class="waiting-dot"></div>Waiting for audio…</div>
   </div>
   <hr>
-
-  <!-- YouTube -->
   <div class="lbl">YouTube</div>
   <div class="yt-row">
     <input id="ytUrl" class="yt-input" type="text" placeholder="Paste YouTube URL…" autocomplete="off" spellcheck="false">
@@ -197,28 +189,16 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
   <div id="ytWrap"><div id="yt-player"></div></div>
   <div id="ytActions" style="display:none">
     <button id="ytCapBtn" class="btn btn-yt" style="margin-top:8px">🎵 Visualize This Video</button>
-    <div class="yt-hint">
-      In the share dialog:<br>
-      1. Select <b>This Tab</b><br>
-      2. Check <b>Share tab audio</b><br>
-      3. Click <b>Share</b>
-    </div>
-    <div class="mobile-note">
-      Tab capture needs <b>desktop Chrome/Edge</b>.<br>
-      On mobile, use <b>Audio File</b> below.
-    </div>
+    <div class="yt-hint">In the share dialog:<br>1. Select <b>This Tab</b><br>2. Check <b>Share tab audio</b><br>3. Click <b>Share</b></div>
+    <div class="mobile-note">Tab capture needs <b>desktop Chrome/Edge</b>.<br>On mobile, use <b>Audio File</b> below.</div>
   </div>
   <hr>
-
-  <!-- Live Capture -->
   <div class="lbl">Live Capture</div>
   <button id="capBtn" class="btn btn-p">🎙 Capture Tab Audio</button>
   <div class="desktop-sub" style="font-size:10px;color:rgba(255,255,255,.28);margin-top:5px">Desktop Chrome/Edge only</div>
   <button id="stopBtn" class="btn btn-r" disabled>⏹ Stop</button>
   <div id="lv" style="display:none"></div>
   <hr>
-
-  <!-- Audio File -->
   <div class="lbl">Audio File</div>
   <label for="fi" class="btn btn-g">📁 Choose File</label>
   <input type="file" id="fi" accept="audio/*">
@@ -228,8 +208,6 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
     <button id="pauseBtn" class="btn btn-g" disabled>⏸ Pause</button>
   </div>
   <hr>
-
-  <!-- Chromatic Scale — desktop only -->
   <div id="wheelSection">
     <div class="lbl">Chromatic Scale</div>
     <div id="wheel"></div>
@@ -240,7 +218,6 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-// ─── NOTE → COLOR ────────────────────────────────────────────────────────────
 const NOTES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const NOTE_HUE={C:0,'C#':30,D:60,'D#':90,E:135,F:165,'F#':190,G:210,'G#':240,A:270,'A#':300,B:330};
 
@@ -280,12 +257,7 @@ renderer.setClearColor(0x030308,1);
 
 const scene=new THREE.Scene();
 const cam=new THREE.PerspectiveCamera(58,window.innerWidth/window.innerHeight,.1,300);
-
-// On mobile, shift camera up so sphere sits in the visible upper area
-function setCamPos(){
-  cam.position.set(0, window.innerWidth<=700?0.9:0, 6);
-}
-setCamPos();
+cam.position.set(0,0,6); // camera stays fixed; we move the sphere instead
 
 const PC=2000;
 const pG=new THREE.BufferGeometry();
@@ -326,6 +298,17 @@ for(let i=0;i<cnt;i++){
 }
 const smoothC=new Float32Array(cnt*3);smoothC.set(vcArr);
 
+// On mobile the panel covers the bottom 55vh, so shift the sphere up
+// so it's centered in the visible top 45vh area.
+// At z=6, FOV=58°: visible height ≈ 6.65 world units.
+// Center of top-45% area = 22.5vh from top = 1.83 world units above screen center.
+function setSpherePos(){
+  const y=window.innerWidth<=700?1.8:0;
+  sphere.position.y=y;
+  gSph.position.y=y;
+}
+setSpherePos();
+
 // ─── CONTROLS ─────────────────────────────────────────────────────────────────
 let drag=false,prevM={x:0,y:0};
 canvas.style.cursor='grab';
@@ -356,10 +339,9 @@ window.addEventListener('resize',()=>{
   cam.aspect=window.innerWidth/window.innerHeight;
   cam.updateProjectionMatrix();
   renderer.setSize(window.innerWidth,window.innerHeight);
-  setCamPos();
-  // Update fade bar position
+  setSpherePos();
   const fade=document.getElementById('fade');
-  if(fade)fade.style.bottom=(window.innerWidth<=700?'55vh':'auto');
+  if(fade)fade.style.bottom=window.innerWidth<=700?'55vh':'auto';
 });
 
 // ─── AUDIO ────────────────────────────────────────────────────────────────────
@@ -508,7 +490,7 @@ function stopAll(){
 
 async function captureTab(triggerBtn,fromYT){
   if(!canCapture){
-    alert('Tab audio capture is not supported on mobile.\n\nUse Chrome or Edge on a desktop computer for the YouTube visualizer.\n\nOn mobile, try the Audio File option.');
+    alert('Tab audio capture is not supported on mobile.\n\nUse Chrome or Edge on a desktop computer.\n\nOn mobile, try the Audio File option.');
     return;
   }
   stopAll();
@@ -577,7 +559,7 @@ document.getElementById('ytLoad').addEventListener('click',()=>{
   const raw=document.getElementById('ytUrl').value.trim();if(!raw)return;
   const id=extractYTId(raw);
   if(!id){alert('Could not find a YouTube video ID.\nExample: https://youtube.com/watch?v=dQw4w9WgXcQ');return;}
-  if(!ytApiReady){alert('YouTube API loading — try again in a moment.');return;}
+  if(!ytApiReady){alert('YouTube API loading — try again.');return;}
   loadYouTubeVideo(id);
 });
 document.getElementById('ytUrl').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('ytLoad').click();});
