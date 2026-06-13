@@ -546,9 +546,9 @@ function stopAll(){
   lvEl.style.display='none';
 }
 
-async function captureTab(labelOverride){
+// fromYT=true means we should resume YouTube playback after capture is established
+async function captureTab(triggerBtn,fromYT){
   stopAll();
-  const triggerBtn=labelOverride||capBtn;
   const origLabel=triggerBtn.innerHTML;
   triggerBtn.innerHTML='<span class="sp"></span> Waiting…';
   triggerBtn.disabled=true;
@@ -564,6 +564,8 @@ async function captureTab(labelOverride){
     stopBtn.disabled=false;
     lvEl.innerHTML='<div class="live"><div class="pd"></div>Capturing tab audio…</div>';
     lvEl.style.display='block';
+    // Resume YouTube now that the analyser is connected and listening
+    if(fromYT&&ytPlayer)try{ytPlayer.playVideo()}catch(e){}
   }catch(e){
     alert('Audio capture failed.\n\n• Select a tab in the dialog\n• Enable "Share tab audio"\n• Click Share');
   }
@@ -583,7 +585,7 @@ function initFile(file){
   pauseBtn.disabled=false;
 }
 
-capBtn.addEventListener('click',()=>captureTab(capBtn));
+capBtn.addEventListener('click',()=>captureTab(capBtn,false));
 stopBtn.addEventListener('click',stopAll);
 
 document.getElementById('fi').addEventListener('change',e=>{
@@ -609,7 +611,6 @@ pauseBtn.addEventListener('click',()=>{
 // ─── YOUTUBE ──────────────────────────────────────────────────────────────────
 let ytPlayer=null,ytApiReady=false;
 
-// Load YouTube IFrame API
 (function(){
   const s=document.createElement('script');
   s.src='https://www.youtube.com/iframe_api';
@@ -620,9 +621,7 @@ window.onYouTubeIframeAPIReady=function(){ytApiReady=true;};
 
 function extractYTId(url){
   url=url.trim();
-  // Bare 11-char ID
   if(/^[A-Za-z0-9_-]{11}$/.test(url))return url;
-  // Full URL variants
   const m=url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|v\/|shorts\/))([A-Za-z0-9_-]{11})/);
   return m?m[1]:null;
 }
@@ -664,7 +663,7 @@ document.getElementById('ytUrl').addEventListener('keydown',e=>{
 });
 
 document.getElementById('ytCapBtn').addEventListener('click',function(){
-  captureTab(this);
+  captureTab(this,true);  // fromYT=true → resumes video after capture
 });
 </script>
 </body>
