@@ -10,6 +10,14 @@
 body{font-family:'Inter',sans-serif;background:#030308;overflow:hidden;height:100vh;color:#fff}
 #c{position:fixed;inset:0;z-index:1}
 
+/* ── GRADIENT FADE above panel — mobile only ────────────────────────────── */
+#fade{
+  display:none;position:fixed;left:0;right:0;z-index:9;pointer-events:none;
+  height:90px;
+  background:linear-gradient(to bottom,transparent,rgba(5,6,20,0.75));
+}
+@media(max-width:700px){#fade{display:block;bottom:55vh}}
+
 /* ── PANEL BASE ─────────────────────────────────────────────────────────── */
 #panel{
   position:fixed;top:20px;left:20px;z-index:10;
@@ -24,67 +32,79 @@ body{font-family:'Inter',sans-serif;background:#030308;overflow:hidden;height:10
 #panel::-webkit-scrollbar-track{background:transparent}
 #panel::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15);border-radius:4px}
 
-/* ── MOBILE PANEL — bottom sheet ──────────────────────────────────────── */
+/* ── MOBILE PANEL ───────────────────────────────────────────────────────── */
 @media(max-width:700px){
   #panel{
     top:auto!important;bottom:0;left:0;right:0;
-    width:100%!important;
-    border-radius:20px 20px 0 0;
-    max-height:55vh;
-    padding:0 16px 30px;
+    width:100%!important;border-radius:22px 22px 0 0;
+    max-height:55vh;padding:0 18px 32px;
     border-left:none;border-right:none;border-bottom:none;
+    background:rgba(6,8,22,0.96);
   }
 }
 
-/* drag handle — mobile only */
-.drag-handle{display:none;justify-content:center;padding:12px 0 10px;flex-shrink:0}
-.drag-handle span{width:36px;height:4px;background:rgba(255,255,255,.18);border-radius:4px}
+/* drag handle */
+.drag-handle{display:none;justify-content:center;padding:12px 0 14px;flex-shrink:0;cursor:grab}
+.drag-handle span{width:40px;height:4px;background:rgba(255,255,255,.2);border-radius:4px}
 @media(max-width:700px){.drag-handle{display:flex}}
 
 /* ── BRAND ──────────────────────────────────────────────────────────────── */
-.brand{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
-.brand-text h1{font-size:17px;font-weight:700;
+.brand{margin-bottom:14px}
+.brand h1{font-size:17px;font-weight:700;
   background:linear-gradient(135deg,#c084fc,#818cf8,#38bdf8);
   -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.brand-text p{font-size:11px;color:rgba(255,255,255,0.35);margin-top:2px}
+.brand p{font-size:11px;color:rgba(255,255,255,0.35);margin-top:2px}
 @media(max-width:700px){
-  .brand-text p{display:none}
-  .brand-text h1{font-size:15px}
-  .brand{margin-bottom:10px}
+  .brand{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .brand h1{font-size:16px}
+  .brand p{display:none}
 }
 
 /* ── SPECTRUM ───────────────────────────────────────────────────────────── */
 #spec{display:flex;align-items:flex-end;gap:2px;height:32px;
   margin-bottom:14px;padding:5px 8px;
-  background:rgba(0,0,0,0.35);border-radius:10px;border:1px solid rgba(255,255,255,0.04)}
-.sb{flex:1;border-radius:2px 2px 0 0;min-height:1px;transition:height .06s ease}
-@media(max-width:700px){#spec{height:22px;margin-bottom:10px}}
+  background:rgba(0,0,0,0.35);border-radius:10px;border:1px solid rgba(255,255,255,0.05)}
+.sb{flex:1;border-radius:2px 2px 0 0;min-height:2px;transition:height .06s ease}
+@media(max-width:700px){#spec{height:28px;margin-bottom:12px}}
+
+/* ── SECTION LABELS ─────────────────────────────────────────────────────── */
+.lbl{font-size:10px;font-weight:700;letter-spacing:1.2px;
+  color:rgba(255,255,255,0.28);text-transform:uppercase;margin-bottom:8px;
+  display:flex;align-items:center;gap:7px}
+.lbl::before{content:'';width:3px;height:11px;border-radius:2px;flex-shrink:0;
+  background:linear-gradient(180deg,#8b5cf6,#38bdf8)}
+@media(max-width:700px){.lbl{font-size:9px;margin-bottom:7px}}
+
+hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
+@media(max-width:700px){hr{margin:10px 0}}
 
 /* ── NOTES ──────────────────────────────────────────────────────────────── */
-.lbl{font-size:10px;font-weight:600;letter-spacing:1.1px;
-  color:rgba(255,255,255,0.3);text-transform:uppercase;margin-bottom:7px}
-#noteRow{display:flex;flex-wrap:wrap;gap:5px;min-height:28px;margin-bottom:12px}
+#noteRow{display:flex;flex-wrap:wrap;gap:5px;min-height:26px;margin-bottom:12px}
 .ntag{padding:3px 10px;border-radius:16px;font-size:11px;font-weight:700;
   display:flex;align-items:center;gap:4px;transition:all .3s}
 .ndot{width:6px;height:6px;border-radius:50%}
-
-hr{border:none;border-top:1px solid rgba(255,255,255,0.06);margin:11px 0}
+.waiting{display:flex;align-items:center;gap:7px;color:rgba(255,255,255,0.2);font-size:11px}
+.waiting-dot{width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,.15);
+  animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.15;transform:scale(1)}50%{opacity:.5;transform:scale(1.3)}}
 
 /* ── BUTTONS ────────────────────────────────────────────────────────────── */
-.btn{width:100%;padding:10px 14px;border:none;border-radius:10px;font-size:13px;
+.btn{width:100%;padding:11px 14px;border:none;border-radius:11px;font-size:13px;
   font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;
-  gap:7px;font-family:'Inter',sans-serif;transition:all .2s;position:relative;overflow:hidden}
+  gap:7px;font-family:'Inter',sans-serif;transition:all .2s}
 .btn-p{background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff;
   box-shadow:0 4px 18px rgba(99,102,241,.4)}
 .btn-p:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(99,102,241,.55)}
-.btn-g{background:rgba(255,255,255,0.05);color:#fff;border:1px solid rgba(255,255,255,0.09)}
-.btn-g:hover{background:rgba(255,255,255,0.1)}
+.btn-g{background:rgba(255,255,255,0.06);color:#fff;border:1px solid rgba(255,255,255,0.09)}
+.btn-g:hover{background:rgba(255,255,255,0.11)}
 .btn-r{background:linear-gradient(135deg,#dc2626,#db2777);color:#fff;
-  box-shadow:0 4px 16px rgba(220,38,38,.3)}
+  box-shadow:0 4px 16px rgba(220,38,38,.3);margin-top:7px}
 .btn-yt{background:linear-gradient(135deg,#dc2626,#c2185b);color:#fff;
-  box-shadow:0 4px 18px rgba(220,38,38,.35)}
+  box-shadow:0 4px 18px rgba(220,38,38,.3)}
 .btn-yt:hover{transform:translateY(-1px)}
-.btn:disabled{opacity:.28;cursor:not-allowed;transform:none!important;box-shadow:none!important}
+.btn:disabled{opacity:.25;cursor:not-allowed;transform:none!important;box-shadow:none!important}
+/* hide disabled Stop on mobile — cleans up dead space */
+@media(max-width:700px){#stopBtn:disabled{display:none}}
 .brow{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}
 #fi{display:none}
 .fn{font-size:10px;color:rgba(255,255,255,0.4);margin-top:5px;padding:5px 8px;
@@ -100,36 +120,33 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.06);margin:11px 0}
 .yt-row{display:flex;gap:6px;align-items:stretch}
 .yt-input{
   flex:1;min-width:0;background:rgba(255,255,255,0.06);
-  border:1px solid rgba(255,255,255,0.1);border-radius:9px;
-  padding:9px 11px;color:#fff;font-size:12px;font-family:inherit;
+  border:1px solid rgba(255,255,255,0.1);border-radius:10px;
+  padding:10px 12px;color:#fff;font-size:12px;font-family:inherit;
   outline:none;transition:border-color .2s;
 }
-.yt-input::placeholder{color:rgba(255,255,255,.28)}
-.yt-input:focus{border-color:rgba(220,38,38,.55)}
+.yt-input::placeholder{color:rgba(255,255,255,.25)}
+.yt-input:focus{border-color:rgba(220,38,38,.5);background:rgba(255,255,255,.08)}
 #ytWrap{
   display:none;margin-top:10px;border-radius:10px;overflow:hidden;
   background:#000;aspect-ratio:16/9;border:1px solid rgba(255,255,255,.07);
 }
 #ytWrap iframe{width:100%!important;height:100%!important;display:block}
-/* hide video player on mobile to save space — audio still plays */
 @media(max-width:700px){#ytWrap{display:none!important}}
-.yt-hint{font-size:10px;color:rgba(255,255,255,.35);margin-top:6px;line-height:1.75;
-  padding:8px 10px;background:rgba(220,38,38,.07);
-  border:1px solid rgba(220,38,38,.18);border-radius:8px;}
-.yt-hint b{color:rgba(255,255,255,.72);font-weight:600}
-/* on mobile replace instructions with a compact note */
+.yt-hint{font-size:10px;color:rgba(255,255,255,.32);margin-top:7px;line-height:1.8;
+  padding:8px 11px;background:rgba(220,38,38,.06);
+  border:1px solid rgba(220,38,38,.15);border-radius:9px;}
+.yt-hint b{color:rgba(255,255,255,.65);font-weight:600}
 @media(max-width:700px){.yt-hint{display:none}}
-.mobile-only{display:none;font-size:10px;color:rgba(255,255,255,.4);margin-top:6px;
-  padding:7px 10px;background:rgba(255,255,255,.04);
-  border:1px solid rgba(255,255,255,.08);border-radius:8px;line-height:1.7}
-.mobile-only b{color:rgba(255,255,255,.65)}
-@media(max-width:700px){.mobile-only{display:block}}
+.mobile-note{
+  display:none;font-size:10px;color:rgba(255,255,255,.38);
+  margin-top:7px;padding:8px 11px;
+  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);
+  border-radius:9px;line-height:1.7}
+.mobile-note b{color:rgba(255,255,255,.6)}
+@media(max-width:700px){.mobile-note{display:block}}
 
-/* hide chromatic wheel on mobile */
-@media(max-width:700px){#wheelSection{display:none}}
-
-/* hide desktop subtext on mobile */
-@media(max-width:700px){.desktop-sub{display:none}}
+/* hide on mobile */
+@media(max-width:700px){#wheelSection,.desktop-sub{display:none}}
 
 /* ── WHEEL ──────────────────────────────────────────────────────────────── */
 #wheel{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-top:8px}
@@ -151,40 +168,44 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.06);margin:11px 0}
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="fade"></div>
 
 <div id="panel">
   <div class="drag-handle"><span></span></div>
 
   <div class="brand">
-    <div class="brand-text">
+    <div>
       <h1>Chromatic Visualizer</h1>
       <p>Real-time musical note detection</p>
     </div>
   </div>
 
   <div id="spec"></div>
+
   <div class="lbl">Detected Notes</div>
-  <div id="noteRow"><span style="color:rgba(255,255,255,0.2);font-size:11px">Waiting for audio…</span></div>
+  <div id="noteRow">
+    <div class="waiting"><div class="waiting-dot"></div>Waiting for audio…</div>
+  </div>
   <hr>
 
   <!-- YouTube -->
   <div class="lbl">YouTube</div>
   <div class="yt-row">
     <input id="ytUrl" class="yt-input" type="text" placeholder="Paste YouTube URL…" autocomplete="off" spellcheck="false">
-    <button id="ytLoad" class="btn btn-yt" style="width:auto;flex-shrink:0;padding:9px 14px">▶</button>
+    <button id="ytLoad" class="btn btn-yt" style="width:auto;flex-shrink:0;padding:10px 15px">▶</button>
   </div>
   <div id="ytWrap"><div id="yt-player"></div></div>
   <div id="ytActions" style="display:none">
     <button id="ytCapBtn" class="btn btn-yt" style="margin-top:8px">🎵 Visualize This Video</button>
     <div class="yt-hint">
       In the share dialog:<br>
-      1. Select <b>This Tab</b> (current tab)<br>
+      1. Select <b>This Tab</b><br>
       2. Check <b>Share tab audio</b><br>
       3. Click <b>Share</b>
     </div>
-    <div class="mobile-only">
-      Tab capture requires <b>desktop Chrome/Edge</b>.<br>
-      On mobile, use <b>Audio File</b> below instead.
+    <div class="mobile-note">
+      Tab capture needs <b>desktop Chrome/Edge</b>.<br>
+      On mobile, use <b>Audio File</b> below.
     </div>
   </div>
   <hr>
@@ -192,8 +213,8 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.06);margin:11px 0}
   <!-- Live Capture -->
   <div class="lbl">Live Capture</div>
   <button id="capBtn" class="btn btn-p">🎙 Capture Tab Audio</button>
-  <div class="desktop-sub" style="font-size:10px;color:rgba(255,255,255,.3);margin-top:5px">Works with Spotify, YouTube, any tab · Desktop only</div>
-  <button id="stopBtn" class="btn btn-r" disabled style="margin-top:7px">⏹ Stop</button>
+  <div class="desktop-sub" style="font-size:10px;color:rgba(255,255,255,.28);margin-top:5px">Desktop Chrome/Edge only</div>
+  <button id="stopBtn" class="btn btn-r" disabled>⏹ Stop</button>
   <div id="lv" style="display:none"></div>
   <hr>
 
@@ -208,7 +229,7 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.06);margin:11px 0}
   </div>
   <hr>
 
-  <!-- Chromatic Scale — hidden on mobile -->
+  <!-- Chromatic Scale — desktop only -->
   <div id="wheelSection">
     <div class="lbl">Chromatic Scale</div>
     <div id="wheel"></div>
@@ -220,17 +241,17 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.06);margin:11px 0}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 // ─── NOTE → COLOR ────────────────────────────────────────────────────────────
-const NOTES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-const NOTE_HUE = {C:0,['C#']:30,D:60,['D#']:90,E:135,F:165,['F#']:190,G:210,['G#']:240,A:270,['A#']:300,B:330};
+const NOTES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const NOTE_HUE={C:0,'C#':30,D:60,'D#':90,E:135,F:165,'F#':190,G:210,'G#':240,A:270,'A#':300,B:330};
 
 function hsl2rgb(h,s,l){
-  h/=360; let r,g,b;
+  h/=360;let r,g,b;
   if(!s){r=g=b=l}else{
-    const q=l<.5?l*(1+s):l+s-l*s, p=2*l-q;
-    const f=(p,q,t)=>{t=(t+1)%1;return t<1/6?p+(q-p)*6*t:t<.5?q:t<2/3?p+(q-p)*(2/3-t)*6:p};
-    r=f(p,q,h+1/3);g=f(p,q,h);b=f(p,q,h-1/3);
+    const q=l<.5?l*(1+s):l+s-l*s,p=2*l-q;
+    const hf=(p,q,t)=>{t=(t+1)%1;return t<1/6?p+(q-p)*6*t:t<.5?q:t<2/3?p+(q-p)*(2/3-t)*6:p};
+    r=hf(p,q,h+1/3);g=hf(p,q,h);b=hf(p,q,h-1/3);
   }
-  return {r,g,b};
+  return{r,g,b};
 }
 const NOTE_RGB={};
 NOTES.forEach(n=>{NOTE_RGB[n]=hsl2rgb(NOTE_HUE[n],1,0.52)});
@@ -238,18 +259,15 @@ NOTES.forEach(n=>{NOTE_RGB[n]=hsl2rgb(NOTE_HUE[n],1,0.52)});
 const wEl=document.getElementById('wheel');
 NOTES.forEach(n=>{
   const d=document.createElement('div');d.className='wc';d.id='wc-'+n;d.textContent=n;
-  const h=NOTE_HUE[n];
-  d.style.background=`hsl(${h},90%,52%)`;
-  d.style.color=h>45&&h<200?'#000':'#fff';
-  wEl.appendChild(d);
+  const h=NOTE_HUE[n];d.style.background=`hsl(${h},90%,52%)`;
+  d.style.color=h>45&&h<200?'#000':'#fff';wEl.appendChild(d);
 });
 
 const specEl=document.getElementById('spec');
 const SB=28;
 for(let i=0;i<SB;i++){
   const b=document.createElement('div');b.className='sb';
-  b.style.background=`hsl(${(i/SB)*280},90%,58%)`;
-  specEl.appendChild(b);
+  b.style.background=`hsl(${(i/SB)*280},90%,58%)`;specEl.appendChild(b);
 }
 const sbEls=[...document.querySelectorAll('.sb')];
 
@@ -262,7 +280,12 @@ renderer.setClearColor(0x030308,1);
 
 const scene=new THREE.Scene();
 const cam=new THREE.PerspectiveCamera(58,window.innerWidth/window.innerHeight,.1,300);
-cam.position.z=6;
+
+// On mobile, shift camera up so sphere sits in the visible upper area
+function setCamPos(){
+  cam.position.set(0, window.innerWidth<=700?0.9:0, 6);
+}
+setCamPos();
 
 const PC=2000;
 const pG=new THREE.BufferGeometry();
@@ -283,14 +306,12 @@ const vcArr=new Float32Array(cnt*3);
 for(let i=0;i<vcArr.length;i+=3){vcArr[i]=.12;vcArr[i+1]=.14;vcArr[i+2]=.28;}
 sGeo.setAttribute('color',new THREE.BufferAttribute(vcArr,3));
 const sMat=new THREE.MeshPhongMaterial({vertexColors:true,shininess:55,specular:new THREE.Color(.25,.25,.35),emissive:new THREE.Color(.04,.04,.1),emissiveIntensity:1});
-const sphere=new THREE.Mesh(sGeo,sMat);
-scene.add(sphere);
+const sphere=new THREE.Mesh(sGeo,sMat);scene.add(sphere);
 const basePos=Float32Array.from(sGeo.attributes.position.array);
 
 const gGeo=new THREE.SphereGeometry(2.25,32,32);
 const gMat=new THREE.MeshBasicMaterial({color:0x5533ff,transparent:true,opacity:.05,blending:THREE.AdditiveBlending,depthWrite:false});
-const gSph=new THREE.Mesh(gGeo,gMat);
-scene.add(gSph);
+const gSph=new THREE.Mesh(gGeo,gMat);scene.add(gSph);
 
 scene.add(new THREE.AmbientLight(0x252540,1.2));
 const kL=new THREE.PointLight(0xffffff,1.4,60);kL.position.set(5,6,5);
@@ -301,8 +322,7 @@ scene.add(kL,fL,bL);
 const vertTheta=new Float32Array(cnt),vertPhi=new Float32Array(cnt);
 for(let i=0;i<cnt;i++){
   const bx=basePos[i*3],by=basePos[i*3+1],bz=basePos[i*3+2];
-  vertTheta[i]=Math.atan2(by,bx);
-  vertPhi[i]=Math.acos(Math.max(-1,Math.min(1,bz/2)));
+  vertTheta[i]=Math.atan2(by,bx);vertPhi[i]=Math.acos(Math.max(-1,Math.min(1,bz/2)));
 }
 const smoothC=new Float32Array(cnt*3);smoothC.set(vcArr);
 
@@ -319,9 +339,11 @@ window.addEventListener('mousemove',e=>{
 });
 canvas.addEventListener('wheel',e=>{e.preventDefault();cam.position.z=Math.max(3,Math.min(12,cam.position.z+e.deltaY*.004));},{passive:false});
 
-// Touch rotate
 let t0=null;
-canvas.addEventListener('touchstart',e=>{if(e.touches.length===1)t0={x:e.touches[0].clientX,y:e.touches[0].clientY};},{passive:true});
+canvas.addEventListener('touchstart',e=>{
+  if(e.target.closest('#panel'))return;
+  if(e.touches.length===1)t0={x:e.touches[0].clientX,y:e.touches[0].clientY};
+},{passive:true});
 canvas.addEventListener('touchmove',e=>{
   if(e.touches.length===1&&t0){
     sphere.rotation.y+=(e.touches[0].clientX-t0.x)*.007;
@@ -334,11 +356,14 @@ window.addEventListener('resize',()=>{
   cam.aspect=window.innerWidth/window.innerHeight;
   cam.updateProjectionMatrix();
   renderer.setSize(window.innerWidth,window.innerHeight);
+  setCamPos();
+  // Update fade bar position
+  const fade=document.getElementById('fade');
+  if(fade)fade.style.bottom=(window.innerWidth<=700?'55vh':'auto');
 });
 
 // ─── AUDIO ────────────────────────────────────────────────────────────────────
 let audioCtx,analyser,freqData,audioEl,audioSrc,stream,active=false;
-
 function mkAnalyser(){
   audioCtx=audioCtx||new(window.AudioContext||window.webkitAudioContext)();
   analyser=audioCtx.createAnalyser();
@@ -423,12 +448,13 @@ function updateUI(){
   const now=Date.now();if(now-lastUIUpdate<80)return;lastUIUpdate=now;
   if(freqData){
     const step=Math.floor(freqData.length/SB/2);
-    sbEls.forEach((b,i)=>{const v=freqData[i*step]/255;b.style.height=Math.max(1,v*(window.innerWidth<=700?18:28))+'px';b.style.opacity=.35+v*.65;});
+    sbEls.forEach((b,i)=>{const v=freqData[i*step]/255;b.style.height=Math.max(2,v*26)+'px';b.style.opacity=.35+v*.65;});
   }
   const row=document.getElementById('noteRow');
   const alive=NOTES.filter(n=>ENV[n]>.08).sort((a,b)=>ENV[b]-ENV[a]);
-  if(alive.length===0){row.innerHTML='<span style="color:rgba(255,255,255,0.2);font-size:11px">No notes detected…</span>';}
-  else{
+  if(alive.length===0){
+    row.innerHTML='<div class="waiting"><div class="waiting-dot"></div>No notes detected…</div>';
+  }else{
     row.innerHTML='';
     alive.slice(0,8).forEach(n=>{
       const h=NOTE_HUE[n],e=ENV[n];
@@ -482,7 +508,7 @@ function stopAll(){
 
 async function captureTab(triggerBtn,fromYT){
   if(!canCapture){
-    alert('Tab audio capture is not supported on mobile.\n\nFor the YouTube visualizer, use Chrome or Edge on a desktop computer.\n\nOn mobile, use the Audio File option instead.');
+    alert('Tab audio capture is not supported on mobile.\n\nUse Chrome or Edge on a desktop computer for the YouTube visualizer.\n\nOn mobile, try the Audio File option.');
     return;
   }
   stopAll();
@@ -495,8 +521,7 @@ async function captureTab(triggerBtn,fromYT){
     if(!stream.getAudioTracks().length)throw new Error('No audio track');
     mkAnalyser();
     audioCtx.createMediaStreamSource(stream).connect(analyser);
-    active=true;
-    stream.getAudioTracks()[0].onended=stopAll;
+    active=true;stream.getAudioTracks()[0].onended=stopAll;
     stopBtn.disabled=false;
     lvEl.innerHTML='<div class="live"><div class="pd"></div>Capturing tab audio…</div>';
     lvEl.style.display='block';
@@ -546,12 +571,7 @@ function loadYouTubeVideo(videoId){
   document.getElementById('ytWrap').style.display='block';
   document.getElementById('ytActions').style.display='block';
   if(ytPlayer&&ytPlayer.loadVideoById){ytPlayer.loadVideoById(videoId);}
-  else{
-    ytPlayer=new YT.Player('yt-player',{
-      videoId,playerVars:{autoplay:1,controls:1,modestbranding:1,rel:0,playsinline:1},
-      events:{onReady:e=>e.target.playVideo()}
-    });
-  }
+  else{ytPlayer=new YT.Player('yt-player',{videoId,playerVars:{autoplay:1,controls:1,modestbranding:1,rel:0,playsinline:1},events:{onReady:e=>e.target.playVideo()}});}
 }
 document.getElementById('ytLoad').addEventListener('click',()=>{
   const raw=document.getElementById('ytUrl').value.trim();if(!raw)return;
