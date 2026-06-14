@@ -150,13 +150,6 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
   padding:8px 11px;background:rgba(220,38,34,.06);
   border:1px solid rgba(220,38,38,.15);border-radius:9px;}
 .yt-hint b{color:rgba(255,255,255,.65);font-weight:600}
-.mobile-note{
-  display:none;font-size:10px;color:rgba(255,255,255,.38);
-  margin-top:7px;padding:8px 11px;
-  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);
-  border-radius:9px;line-height:1.7}
-.mobile-note b{color:rgba(255,255,255,.6)}
-@media(max-width:700px){.mobile-note{display:block}}
 
 #wheel{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-top:8px}
 .wc{border-radius:7px;aspect-ratio:1;display:flex;align-items:center;
@@ -199,9 +192,7 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
   </div>
   <div id="ytWrap"><div id="yt-player"></div></div>
   <div id="ytActions" style="display:none">
-    <button id="ytCapBtn" class="btn btn-yt" style="margin-top:8px">&#127925; Visualize This Video</button>
-    <div class="yt-hint">In the share dialog:<br>1. Select <b>This Tab</b><br>2. Check <b>Share tab audio</b><br>3. Click <b>Share</b></div>
-    <div class="mobile-note">Tab capture needs <b>desktop Chrome/Edge</b>.<br>On mobile, use <b>Audio File</b> below.</div>
+    <div class="yt-hint">&#9654; <b>Play</b> the video &mdash; sphere animates automatically.<br>&#9208; <b>Pause</b> to freeze the sphere.</div>
   </div>
   <hr>
   <div class="lbl">Live Capture</div>
@@ -395,9 +386,10 @@ toggleBtn.addEventListener('click',togglePanel);
 
 // ---- AUDIO ----
 var audioCtx,analyser,freqData,audioEl,audioSrc,stream,active=false;
+var ytActive=false,ytFrozen=false,ytBeat=0;
+
 function mkAnalyser(){
   if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-  // Chrome/Edge suspend AudioContext until user interaction; always wake it here
   audioCtx.resume();
   analyser=audioCtx.createAnalyser();
   analyser.fftSize=8192;analyser.smoothingTimeConstant=0.55;
@@ -466,6 +458,39 @@ function idleVisualize(t){
   sMat.emissiveIntensity=1.0+Math.sin(t*1.4)*0.15;
 }
 
+// Procedural animation that runs while a YouTube video is playing.
+// Uses a ~60 BPM synthetic beat and a faster hue sweep to look energetic
+// without requiring real audio data (which is blocked by browser CORS).
+function ytVisualize(t){
+  var rawBeat=Math.pow(Math.max(0,Math.sin(t*Math.PI*2.0)),10)*0.85;
+  ytBeat+=(rawBeat-ytBeat)*0.22;
+  var posAttr=sGeo.attributes.position,colAttr=sGeo.attributes.color;
+  for(var i=0;i<cnt;i++){
+    var i3=i*3;
+    var bx=basePos[i3],by=basePos[i3+1],bz=basePos[i3+2];
+    var phi=vertPhi[i],theta=vertTheta[i];
+    var hue=((phi/Math.PI*0.55+(theta+Math.PI)/(2*Math.PI)*0.45+t*0.16)%1+1)%1;
+    hue=(hue+ytBeat*0.20)%1;
+    var rgb=hsl2rgb(hue*360,0.88,0.42+ytBeat*0.24);
+    var rate=0.055+ytBeat*0.22;
+    smoothC[i3]+=(rgb.r-smoothC[i3])*rate;
+    smoothC[i3+1]+=(rgb.g-smoothC[i3+1])*rate;
+    smoothC[i3+2]+=(rgb.b-smoothC[i3+2])*rate;
+    colAttr.setXYZ(i,smoothC[i3],smoothC[i3+1],smoothC[i3+2]);
+    var disp=ytBeat*0.13*Math.sin(phi*6+theta*5+t*3.0);
+    var sc=1+disp+Math.sin(t*1.9+phi*2.5)*0.015;
+    posAttr.setXYZ(i,bx*sc,by*sc,bz*sc);
+  }
+  posAttr.needsUpdate=true;colAttr.needsUpdate=true;
+  var gh=((t*0.16)%1+1)%1;
+  var gc=hsl2rgb((gh+ytBeat*0.15)*360,1.0,0.60);
+  gMat.color.setRGB(gc.r,gc.g,gc.b);
+  gMat.opacity=0.10+ytBeat*0.26;
+  gSph.scale.setScalar(1+ytBeat*0.09);
+  sMat.emissive.setRGB(smoothC[0]*0.5,smoothC[1]*0.5,smoothC[2]*0.5);
+  sMat.emissiveIntensity=1.1+ytBeat*1.0;
+}
+
 function audioVisualize(t){
   beatPulse*=0.90;
   var posAttr=sGeo.attributes.position,colAttr=sGeo.attributes.color;
@@ -519,14 +544,16 @@ function updateUI(){
   var row=document.getElementById('noteRow');
   var alive=NOTES.filter(function(n){return ENV[n]>.08;}).sort(function(a,b){return ENV[b]-ENV[a];});
   if(alive.length===0){
-    row.innerHTML='<div class="waiting"><div class="waiting-dot"></div>'+(active?'No notes detected&hellip;':'Waiting for audio&hellip;')+'</div>';
+    var waitMsg=active?'No notes detected&hellip;':(ytActive?'Sphere synced to YouTube&hellip;':'Waiting for audio&hellip;');
+    row.innerHTML='<div class="waiting"><div class="waiting-dot"></div>'+waitMsg+'</div>';
   }else{
     row.innerHTML='';
     alive.slice(0,8).forEach(function(n){
       var h=NOTE_HUE[n],e=ENV[n];
       var el=document.createElement('div');el.className='ntag';
       el.style.background='hsl('+h+',88%,52%)';el.style.color=(h>45&&h<200)?'#000':'#fff';
-      el.style.opacity=.4+e*.6;el.style.transform='scale('+((.85+e*.2))+')';      var oct=rawDetected.has(n)?rawDetected.get(n).octave:'';
+      el.style.opacity=.4+e*.6;el.style.transform='scale('+((.85+e*.2))+')';
+      var oct=rawDetected.has(n)?rawDetected.get(n).octave:'';
       el.innerHTML='<div class="ndot" style="background:rgba(0,0,0,.3)"></div>'+n+oct;
       row.appendChild(el);
     });
@@ -544,10 +571,13 @@ function animate(ts){
   requestAnimationFrame(animate);
   var t=ts*.001;
   detectNotes();
-  if(active){audioVisualize(t);}else{idleVisualize(t);}
+  if(active){audioVisualize(t);}
+  else if(ytActive&&!ytFrozen){ytVisualize(t);}
+  else if(!ytFrozen){idleVisualize(t);}
+  // ytFrozen with no active audio: sphere stays frozen (no vertex updates)
   updateUI();
   var totalEnv=active?NOTES.reduce(function(s,n){return s+ENV[n];},0):0;
-  var target=.0014+beatPulse*.015+totalEnv*.0005;
+  var target=.0014+beatPulse*.015+(ytActive&&!ytFrozen?ytBeat*.008:0)+totalEnv*.0005;
   rotSpeed+=(target-rotSpeed)*.04;
   sphere.rotation.y+=rotSpeed;
   gSph.rotation.y-=rotSpeed*.4;
@@ -568,6 +598,8 @@ var isMobile=/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 var canCapture=!isMobile&&!!(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia);
 
 function stopAll(){
+  // Reset yt state before pausing player to avoid onStateChange race condition
+  ytActive=false;ytFrozen=false;
   if(stream){stream.getTracks().forEach(function(t){t.stop();});stream=null;}
   if(audioEl)audioEl.pause();
   if(audioSrc)try{audioSrc.disconnect();}catch(e){}
@@ -579,7 +611,7 @@ function stopAll(){
   lvEl.style.display='none';
 }
 
-function captureTab(triggerBtn,fromYT){
+function captureTab(triggerBtn){
   if(!canCapture){
     alert('Tab audio capture is not supported on mobile.\n\nUse Chrome or Edge on a desktop computer.\n\nOn mobile, try the Audio File option.');
     return;
@@ -593,8 +625,6 @@ function captureTab(triggerBtn,fromYT){
     stream.getVideoTracks().forEach(function(t){t.stop();stream.removeTrack(t);});
     if(!stream.getAudioTracks().length)throw new Error('No audio track');
     mkAnalyser();
-    // audioCtx.resume() is already called inside mkAnalyser(), but call again
-    // explicitly here to guarantee it runs inside the user-gesture async chain
     audioCtx.resume();
     audioCtx.createMediaStreamSource(stream).connect(analyser);
     active=true;
@@ -602,7 +632,6 @@ function captureTab(triggerBtn,fromYT){
     stopBtn.disabled=false;
     lvEl.innerHTML='<div class="live"><div class="pd"></div>Capturing tab audio&hellip;</div>';
     lvEl.style.display='block';
-    if(fromYT&&ytPlayer)try{ytPlayer.playVideo();}catch(e){}
     triggerBtn.innerHTML=origLabel;
     triggerBtn.disabled=false;
   }).catch(function(){
@@ -621,7 +650,7 @@ function initFile(file){
   playBtn.disabled=false;pauseBtn.disabled=false;
 }
 
-capBtn.addEventListener('click',function(){captureTab(capBtn,false);});
+capBtn.addEventListener('click',function(){captureTab(capBtn);});
 stopBtn.addEventListener('click',stopAll);
 document.getElementById('fi').addEventListener('change',function(e){
   var f=e.target.files[0];if(!f)return;
@@ -641,12 +670,37 @@ var ytPlayer=null,ytApiReady=false;
 (function(){var s=document.createElement('script');s.src='https://www.youtube.com/iframe_api';document.head.appendChild(s);})();
 window.onYouTubeIframeAPIReady=function(){ytApiReady=true;};
 
+// Called by the YT IFrame player when playback state changes.
+// PLAYING (1) → start ytVisualize; PAUSED (2) → freeze sphere;
+// ENDED (0) / UNSTARTED (-1) → return to idle.
+function handleYtState(state){
+  if(state===1){
+    if(!active){
+      ytActive=true;ytFrozen=false;
+      lvEl.innerHTML='<div class="live"><div class="pd"></div>YouTube playing &mdash; sphere synced</div>';
+      lvEl.style.display='block';
+      stopBtn.disabled=false;
+    }
+  }else if(state===2){
+    // Only freeze if we were already tracking this video
+    if(!active&&ytActive){
+      ytFrozen=true;
+      lvEl.innerHTML='<div class="live" style="border-color:rgba(255,200,0,.2);background:rgba(255,200,0,.05);color:rgba(255,220,80,.85)"><div class="pd" style="background:#ffd700;animation:none;opacity:0.6"></div>YouTube paused &mdash; sphere frozen</div>';
+      lvEl.style.display='block';
+    }
+  }else if(state===0||state===-1){
+    ytActive=false;ytFrozen=false;
+    if(!active){lvEl.style.display='none';stopBtn.disabled=true;}
+  }
+}
+
 function extractYTId(url){
   url=url.trim();
   if(/^[A-Za-z0-9_-]{11}$/.test(url))return url;
   var m=url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|v\/|shorts\/))([A-Za-z0-9_-]{11})/);
   return m?m[1]:null;
 }
+
 function loadYouTubeVideo(videoId){
   document.getElementById('ytWrap').style.display='block';
   document.getElementById('ytActions').style.display='block';
@@ -656,10 +710,14 @@ function loadYouTubeVideo(videoId){
     ytPlayer=new YT.Player('yt-player',{
       videoId:videoId,
       playerVars:{autoplay:1,controls:1,modestbranding:1,rel:0,playsinline:1},
-      events:{onReady:function(e){e.target.playVideo();}}
+      events:{
+        onReady:function(e){e.target.playVideo();},
+        onStateChange:function(e){handleYtState(e.data);}
+      }
     });
   }
 }
+
 document.getElementById('ytLoad').addEventListener('click',function(){
   var raw=document.getElementById('ytUrl').value.trim();if(!raw)return;
   var id=extractYTId(raw);
@@ -668,7 +726,6 @@ document.getElementById('ytLoad').addEventListener('click',function(){
   loadYouTubeVideo(id);
 });
 document.getElementById('ytUrl').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('ytLoad').click();});
-document.getElementById('ytCapBtn').addEventListener('click',function(){captureTab(this,true);});
 </script>
 </body>
 </html>
