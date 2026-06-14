@@ -394,18 +394,21 @@ function togglePanel(){
 toggleBtn.addEventListener('click',togglePanel);
 
 // ---- AUDIO ----
-var audioCtx,analyser,freqData,timeData,lpFilter,audioEl,audioSrc,stream,active=false;
+var audioCtx,analyser,freqData,freqDataFloat,timeData,lpFilter,audioEl,audioSrc,stream,active=false;
 var ytActive=false,ytFrozen=false,ytBeat=0;
 var yinDiff=null,yinCmnd=null;
 var watchdogTimer=null;
+// Pre-allocated chromagram state — avoids per-frame heap allocation
+var chromaSmooth=new Float32Array(12);  // temporally smoothed pitch-class energy
+var noiseEst=new Float32Array(12);      // per-class adaptive noise floor
+var notePersist=new Int32Array(12);     // frames remaining in persistence window
+var noteOnset=new Uint8Array(12);       // hysteresis state (0=off, 1=on)
+var PERSIST_FRAMES=8;                   // ~133 ms at 60 fps
 
 function resumeAudioCtx(){
   if(audioCtx&&audioCtx.state!=='running')audioCtx.resume().catch(function(){});
 }
 
-// Watchdog: every 2 s, ensure AudioContext is running and stream is healthy.
-// Chrome suspends AudioContext on tab blur/power-saving without any warning,
-// which causes the analyser to silently stop producing data.
 function startWatchdog(){
   stopWatchdog();
   watchdogTimer=setInterval(function(){
@@ -422,7 +425,6 @@ function stopWatchdog(){
   if(watchdogTimer){clearInterval(watchdogTimer);watchdogTimer=null;}
 }
 
-// Resume immediately when the user returns to the tab or window
 document.addEventListener('visibilitychange',function(){
   if(!document.hidden&&active)resumeAudioCtx();
 });
@@ -432,16 +434,34 @@ function mkAnalyser(){
   if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   audioCtx.resume();
   audioCtx.onstatechange=function(){if(active)resumeAudioCtx();};
-  // Low-pass filter attenuates harmonics above ~2800 Hz before analysis
+
+  // Pass harmonics up to 18 kHz — sub-harmonic folding needs them to
+  // vote back onto low-frequency fundamental pitch classes.
   lpFilter=audioCtx.createBiquadFilter();
   lpFilter.type='lowpass';
-  lpFilter.frequency.value=2800;
-  lpFilter.Q.value=0.707;
+  lpFilter.frequency.value=18000;
+  lpFilter.Q.value=0.5;
+
   analyser=audioCtx.createAnalyser();
-  analyser.fftSize=8192;analyser.smoothingTimeConstant=0.55;
+  // 32768 bins → ~1.35 Hz/bin at 44100 Hz; 20 Hz lands on bin ~15.
+  analyser.fftSize=32768;
+  // Heavy temporal smoothing suppresses percussion transients and flicker.
+  analyser.smoothingTimeConstant=0.80;
+  // Full dynamic range for quiet sub-bass content.
+  analyser.minDecibels=-100;
+  analyser.maxDecibels=-10;
+
   freqData=new Uint8Array(analyser.frequencyBinCount);
+  // Float32 gives true dB values — far more precise than 8-bit byte data.
+  freqDataFloat=new Float32Array(analyser.frequencyBinCount);
   timeData=new Float32Array(2048);
   lpFilter.connect(analyser);
+
+  // Reset smoothing state so a new session starts clean
+  chromaSmooth.fill(0);
+  noiseEst.fill(1e-7);
+  notePersist.fill(0);
+  noteOnset.fill(0);
 }
 
 var ENV={};NOTES.forEach(function(n){ENV[n]=0;});
@@ -454,8 +474,7 @@ function freq2note(f){
 }
 var rawDetected=new Map();
 
-// yinPitch() — monophonic fundamental detector, kept for single-instrument use.
-// Not called by detectNotes() which uses a polyphonic chromagram instead.
+// yinPitch() — monophonic fundamental detector; kept for single-instrument use.
 function yinPitch(){
   if(!analyser||!active||!timeData)return -1;
   analyser.getFloatTimeDomainData(timeData);
@@ -498,63 +517,184 @@ function yinPitch(){
   return sr/betterTau;
 }
 
-// Harmonic Pitch Class Profile (chromagram) — polyphonic note detection.
-// For each FFT bin, squared amplitude votes for its pitch class.
-// Sub-harmonic folding: a bin at f also votes for pc(f/2) and pc(f/3)
-// with decreasing weights, so overtones reinforce their fundamental's
-// pitch class rather than lighting up as spurious separate notes.
-// Adaptive threshold filters uniform drum/noise energy and surfaces the
-// 2-5 strongest note classes in a full mix.
+// ─────────────────────────────────────────────────────────────────────────────
+// detectNotes — three-pass polyphonic detector
+//
+// PASS 1  Sub-harmonic folding chromagram (20–4000 Hz)
+//   Each FFT bin at freq f contributes power to pc(f/1..5) with decreasing
+//   weights so overtones reinforce their fundamental's pitch class.
+//   Frequency-dependent gain compensates for low-end under-representation.
+//
+// PASS 2  Subharmonic Summation confirmation (20–200 Hz)
+//   For every candidate low-freq bin, require ≥1 harmonic above the noise
+//   floor before crediting. Confirmed fundamentals receive extra gain
+//   (×12 below 50 Hz) so 808s, kick-driven basslines and synth bass
+//   register even when the fundamental is weaker than its overtones.
+//
+// PASS 3  Adaptive noise floor + temporal smoothing
+//   Per-class asymmetric IIR noise tracker (1% attack / 10% release).
+//   Chromagram smoothed α=0.55/0.45 each frame (~80 ms time constant).
+//
+// PASS 4  SNR confidence + hysteresis + 8-frame persistence
+//   Onset threshold 42% of peak SNR; sustain threshold 28%.
+//   Notes held for PERSIST_FRAMES after confidence drops (fading out).
+//   Top-5 by SNR emitted to ENV for color/displacement mapping.
+// ─────────────────────────────────────────────────────────────────────────────
 function detectNotes(){
   if(!analyser||!active)return;
-  analyser.getByteFrequencyData(freqData);
 
-  // Beat/energy detection (unchanged)
+  // Beat / energy for displacement animation (byte data is fine here)
+  analyser.getByteFrequencyData(freqData);
   var energy=0;
   for(var ei=1;ei<80;ei++)energy+=freqData[ei];energy/=80;
   var eDiff=energy-smoothEnergy;smoothEnergy+=(energy-smoothEnergy)*.15;
   if(eDiff>22)beatPulse=Math.min(1,eDiff/60);
 
-  rawDetected.clear();
+  // High-precision dB spectrum for pitch analysis
+  analyser.getFloatFrequencyData(freqDataFloat);
+
   var sr=audioCtx.sampleRate;
   var binHz=sr/analyser.fftSize;
+  var numBins=analyser.frequencyBinCount;
+  var minDb=analyser.minDecibels;    // -100
+  var dbRange=analyser.maxDecibels-minDb; // 90
 
-  // Accumulate power into 12 pitch-class bins across A1 (55 Hz) – C7 (2100 Hz)
+  var loB=Math.max(1,Math.floor(20/binHz));
+  var hiB=Math.min(Math.ceil(4000/binHz),numBins-1);
+
+  rawDetected.clear();
+
+  // ── PASS 1: sub-harmonic folding chromagram ──────────────────────────────
   var chroma=new Float32Array(12);
-  var hDivs=[1,2,3];       // fundamental, sub-octave, sub-twelfth
-  var hWts=[1.0,0.50,0.25];
-  var lo=Math.max(1,Math.floor(55/binHz));
-  var hi=Math.min(Math.ceil(2100/binHz),freqData.length-1);
+  var FOLD_WT=[1.0,0.60,0.40,0.25,0.15]; // weights for harmonic orders 1-5
 
-  for(var b=lo;b<=hi;b++){
-    var v=freqData[b]/255;
-    if(v<0.06)continue;                       // skip noise floor
-    for(var h=0;h<3;h++){
-      var fh=(b*binHz)/hDivs[h];
-      if(fh<40)break;
-      var midi=12*Math.log2(fh/440)+69;
-      var pclass=((Math.round(midi)%12)+12)%12;
-      chroma[pclass]+=v*v*hWts[h];
+  for(var b=loB;b<=hiB;b++){
+    var dB=freqDataFloat[b];
+    if(dB<=minDb+5)continue;                    // hard noise gate
+    var norm=(dB-minDb)/dbRange;                // 0–1 linear
+    var power=norm*norm;                         // power domain
+    if(power<0.002)continue;
+
+    var freq=b*binHz;
+
+    // Perceptual gain: sub-bass needs a significant boost to compete
+    // with louder mid/high content in a typical music mix.
+    var gain;
+    if(freq<30)      gain=8.0;
+    else if(freq<50) gain=6.0;
+    else if(freq<80) gain=4.0;
+    else if(freq<150)gain=2.5;
+    else if(freq<300)gain=1.8;
+    else if(freq<600)gain=1.3;
+    else if(freq>3000)gain=0.5;
+    else             gain=1.0;
+
+    var w=power*gain;
+
+    // Fold energy from this bin back toward its potential fundamental classes.
+    // A bin at freq f is potentially the N-th harmonic of f/N.
+    for(var fold=1;fold<=5;fold++){
+      var fFund=freq/fold;
+      if(fFund<20)break;
+      var mF=12*Math.log2(fFund/440)+69;
+      var pcF=((Math.round(mF)%12)+12)%12;
+      chroma[pcF]+=w*FOLD_WT[fold-1];
     }
   }
 
-  // Adaptive threshold: note must exceed the chroma mean by 40%
-  // AND be within 70% of the peak (shows ~2-5 dominant notes in a mix)
-  var maxC=0,sumC=0;
-  for(var ci=0;ci<12;ci++){sumC+=chroma[ci];if(chroma[ci]>maxC)maxC=chroma[ci];}
-  if(maxC<0.002){
+  // ── PASS 2: SHS confirmation for 20–200 Hz fundamentals ─────────────────
+  // Only bins that also have measurable harmonic energy above them are
+  // credited — this rejects low-freq noise and kick-drum rumble that
+  // lacks a clear harmonic series.
+  var loShs=Math.max(1,Math.floor(20/binHz));
+  var hiShs=Math.min(Math.ceil(200/binHz),Math.floor(numBins/6));
+
+  for(var b=loShs;b<=hiShs;b++){
+    var dB=freqDataFloat[b];
+    if(dB<=minDb+6)continue;
+    var p0=(dB-minDb)/dbRange;
+    if(p0<0.06)continue;
+
+    var freq=b*binHz;
+    var shsSum=p0;
+    var harmonicsFound=0;
+
+    for(var h=2;h<=6;h++){
+      var bh=Math.round(b*h);
+      if(bh>=numBins)break;
+      var dbH=freqDataFloat[bh];
+      if(dbH>minDb+6){
+        shsSum+=((dbH-minDb)/dbRange)*(0.8/(h-1));
+        harmonicsFound++;
+      }
+    }
+
+    if(harmonicsFound<1)continue; // must confirm with at least one harmonic
+
+    var mF=12*Math.log2(freq/440)+69;
+    var pcF=((Math.round(mF)%12)+12)%12;
+    // Extra gain scales with how low the fundamental is — the very lowest
+    // frequencies (808s, sub-bass synths) need the most reinforcement.
+    var shsGain=freq<50?12:(freq<80?8:(freq<120?5:3));
+    chroma[pcF]+=shsSum*shsSum*shsGain;
+  }
+
+  // ── PASS 3: temporal smoothing + adaptive per-class noise floor ──────────
+  for(var ci=0;ci<12;ci++){
+    // Exponential smoothing: 55% previous frame, 45% current
+    chromaSmooth[ci]=chromaSmooth[ci]*0.55+chroma[ci]*0.45;
+    // Asymmetric noise tracker: slow rise (1%), faster fall (10%)
+    var rate=chromaSmooth[ci]>noiseEst[ci]?0.01:0.10;
+    noiseEst[ci]+=(chromaSmooth[ci]-noiseEst[ci])*rate;
+    noiseEst[ci]=Math.max(noiseEst[ci],1e-7);
+  }
+
+  // ── PASS 4: SNR confidence, hysteresis, persistence, top-5 selection ─────
+  var maxSNR=0;
+  var snr=new Float32Array(12);
+  for(var ci=0;ci<12;ci++){
+    snr[ci]=chromaSmooth[ci]/(noiseEst[ci]*2+1e-7);
+    if(snr[ci]>maxSNR)maxSNR=snr[ci];
+  }
+
+  if(maxSNR<2.0){
+    // Silence or pure noise — decay everything and clear persistence
     NOTES.forEach(function(n){ENV[n]*=(1-DECAY);if(ENV[n]<.005)ENV[n]=0;});
+    notePersist.fill(0);
+    noteOnset.fill(0);
     return;
   }
-  var meanC=sumC/12;
-  var thr=Math.max(meanC*1.4,maxC*0.30);
 
-  NOTES.forEach(function(n,ni){
-    var c=chroma[ni];
-    if(c>thr){
-      var intensity=Math.min(1,(c-thr)/(maxC-thr+1e-9)*0.65+0.35);
-      rawDetected.set(n,{name:n,octave:4,cents:0,intensity:intensity});
+  var candidates=[];
+
+  for(var ci=0;ci<12;ci++){
+    var normSnr=snr[ci]/maxSNR;
+    // Hysteresis: higher threshold to start (42%), lower to keep active (28%)
+    var activeThr=noteOnset[ci]?0.28:0.42;
+
+    if(normSnr>=activeThr){
+      noteOnset[ci]=1;
+      notePersist[ci]=PERSIST_FRAMES;
+      candidates.push({idx:ci,snr:snr[ci],norm:normSnr});
+    }else{
+      noteOnset[ci]=0;
+      if(notePersist[ci]>0){
+        notePersist[ci]--;
+        // Still within persistence window — emit at fading confidence
+        var fadeNorm=(notePersist[ci]/PERSIST_FRAMES)*normSnr;
+        candidates.push({idx:ci,snr:snr[ci]*0.5,norm:Math.max(0,fadeNorm)});
+      }
     }
+  }
+
+  // Sort by descending SNR, keep at most 5 musically significant notes
+  candidates.sort(function(a,b){return b.snr-a.snr;});
+  if(candidates.length>5)candidates.length=5;
+
+  candidates.forEach(function(c){
+    var n=NOTES[c.idx];
+    var intensity=Math.min(1,Math.max(0.15,c.norm*0.85+0.15));
+    rawDetected.set(n,{name:n,octave:'',cents:0,intensity:intensity});
   });
 
   NOTES.forEach(function(n){
@@ -687,7 +827,7 @@ function updateUI(){
       el.style.background='hsl('+h+',88%,52%)';el.style.color=(h>45&&h<200)?'#000':'#fff';
       el.style.opacity=.4+e*.6;el.style.transform='scale('+((.85+e*.2))+')';
       var oct=rawDetected.has(n)?rawDetected.get(n).octave:'';
-      el.innerHTML='<div class="ndot" style="background:rgba(0,0,0,.3)"></div>'+n+(rawDetected.has(n)?'':' ');
+      el.innerHTML='<div class="ndot" style="background:rgba(0,0,0,.3)"></div>'+n+oct;
       row.appendChild(el);
     });
   }
@@ -744,9 +884,6 @@ function stopAll(){
   lvEl.style.display='none';
 }
 
-// selfBrowserSurface:'include' (Chrome 107+) makes the current tab appear
-// in the share dialog so the user can capture the embedded iframe audio.
-// preferCurrentTab:true pre-selects it so the user only needs to click Share.
 function captureTab(triggerBtn){
   if(!canCapture){
     alert('Tab audio capture is not supported on mobile.\n\nUse Chrome or Edge on a desktop computer.\n\nOn mobile, try the Audio File option.');
