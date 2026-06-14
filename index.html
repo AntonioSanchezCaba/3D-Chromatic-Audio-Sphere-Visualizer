@@ -196,9 +196,11 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
   <div id="ytWrap"><div id="yt-player"></div></div>
   <div id="ytActions" style="display:none">
     <button id="ytCapBtn" class="btn btn-yt" style="margin-top:8px">&#127911; Detect Notes from This Video</button>
-    <div class="yt-hint">In the share dialog: pick <b>This Tab</b>, enable <b>Share tab audio</b>, click <b>Share</b>.</div>
+    <div class="yt-hint">
+      In the dialog, <b>click the tab where your video is playing</b> (not this page &mdash; browsers exclude the current tab). Then enable <b>Share tab audio</b> and click <b>Share</b>.
+    </div>
     <hr class="yt-divider">
-    <div class="yt-play-hint">&#9654; <b>Play / Pause</b> the video to animate or freeze the sphere without note detection.</div>
+    <div class="yt-play-hint">&#9654; <b>Play&nbsp;/&nbsp;Pause</b> below animates or freezes the sphere without note detection.</div>
   </div>
   <hr>
   <div class="lbl">Live Capture</div>
@@ -495,22 +497,17 @@ function ytVisualize(t){
   sMat.emissiveIntensity=1.1+ytBeat*1.0;
 }
 
-// Sphere color = weighted average of active note colors so the connection
-// between detected notes and the sphere hue is direct and obvious.
 function audioVisualize(t){
   beatPulse*=0.90;
   var posAttr=sGeo.attributes.position,colAttr=sGeo.attributes.color;
   var totalEnv=0;
   NOTES.forEach(function(n){totalEnv+=ENV[n];});
-
-  // Weighted color mix computed once outside the vertex loop
   var mixR=0,mixG=0,mixB=0,mixSum=0;
   NOTES.forEach(function(n){
     var e=ENV[n];if(e<.005)return;
     var rgb=NOTE_RGB[n];
     mixR+=rgb.r*e;mixG+=rgb.g*e;mixB+=rgb.b*e;mixSum+=e;
   });
-
   for(var i=0;i<cnt;i++){
     var i3=i*3,bx=basePos[i3],by=basePos[i3+1],bz=basePos[i3+2];
     var phi=vertPhi[i],theta=vertTheta[i];
@@ -643,14 +640,14 @@ function captureTab(triggerBtn){
     active=true;
     stream.getAudioTracks()[0].onended=stopAll;
     stopBtn.disabled=false;
-    // Resume the embedded YouTube video if it was playing before capture started
-    if(ytPlayer)try{ytPlayer.playVideo();}catch(e){}
+    // Note: do NOT restart ytPlayer here — if the user shared a different
+    // YouTube tab, restarting the embed would cause double audio.
     lvEl.innerHTML='<div class="live"><div class="pd"></div>Detecting notes&hellip;</div>';
     lvEl.style.display='block';
     triggerBtn.innerHTML=origLabel;
     triggerBtn.disabled=false;
   }).catch(function(){
-    alert('Audio capture failed.\n\n- Select THIS tab in the dialog\n- Enable "Share tab audio"\n- Click Share');
+    alert('Audio capture failed.\n\n1. Click on the tab where your music is playing\n2. Enable "Share tab audio" (toggle ON)\n3. Click Share\n\nNote: this page itself will NOT appear in the list — browsers exclude the current tab.');
     triggerBtn.innerHTML=origLabel;
     triggerBtn.disabled=false;
   });
@@ -687,7 +684,6 @@ window.onYouTubeIframeAPIReady=function(){ytApiReady=true;};
 
 function handleYtState(state){
   if(state===1){
-    // PLAYING: only drive ytVisualize if real audio capture is not active
     if(!active){
       ytActive=true;ytFrozen=false;
       lvEl.innerHTML='<div class="live"><div class="pd"></div>YouTube playing &mdash; sphere synced (no note detection)</div>';
