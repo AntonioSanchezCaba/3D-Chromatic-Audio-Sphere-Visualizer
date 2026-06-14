@@ -396,14 +396,16 @@ toggleBtn.addEventListener('click',togglePanel);
 // ---- AUDIO ----
 var audioCtx,analyser,freqData,freqDataFloat,timeData,lpFilter,audioEl,audioSrc,stream,active=false;
 var ytActive=false,ytFrozen=false,ytBeat=0;
-var yinDiff=null,yinCmnd=null;
 var watchdogTimer=null;
-// Pre-allocated chromagram state — avoids per-frame heap allocation
+// Pre-allocated chromagram / HPS state
 var chromaSmooth=new Float32Array(12);  // temporally smoothed pitch-class energy
 var noiseEst=new Float32Array(12);      // per-class adaptive noise floor
 var notePersist=new Int32Array(12);     // frames remaining in persistence window
 var noteOnset=new Uint8Array(12);       // hysteresis state (0=off, 1=on)
 var PERSIST_FRAMES=8;                   // ~133 ms at 60 fps
+var hpsPower=null,hpsScore=null;        // linear power + HPS score arrays, sized in mkAnalyser()
+var octaveLock=new Array(12).fill(null);// locked octave per pitch class; null = not yet locked
+var octaveLockCount=new Int32Array(12); // consecutive frames a new (different) octave has been seen
 
 function resumeAudioCtx(){
   if(audioCtx&&audioCtx.state!=='running')audioCtx.resume().catch(function(){});
@@ -435,33 +437,33 @@ function mkAnalyser(){
   audioCtx.resume();
   audioCtx.onstatechange=function(){if(active)resumeAudioCtx();};
 
-  // Pass harmonics up to 18 kHz — sub-harmonic folding needs them to
-  // vote back onto low-frequency fundamental pitch classes.
+  // Pass harmonics up to 18 kHz for HPS to find fundamentals from overtones.
   lpFilter=audioCtx.createBiquadFilter();
   lpFilter.type='lowpass';
   lpFilter.frequency.value=18000;
   lpFilter.Q.value=0.5;
 
   analyser=audioCtx.createAnalyser();
-  // 32768 bins → ~1.35 Hz/bin at 44100 Hz; 20 Hz lands on bin ~15.
-  analyser.fftSize=32768;
-  // Heavy temporal smoothing suppresses percussion transients and flicker.
+  analyser.fftSize=32768;              // ~1.35 Hz/bin at 44100 Hz; reliable to 20 Hz
   analyser.smoothingTimeConstant=0.80;
-  // Full dynamic range for quiet sub-bass content.
   analyser.minDecibels=-100;
   analyser.maxDecibels=-10;
 
   freqData=new Uint8Array(analyser.frequencyBinCount);
-  // Float32 gives true dB values — far more precise than 8-bit byte data.
   freqDataFloat=new Float32Array(analyser.frequencyBinCount);
   timeData=new Float32Array(2048);
   lpFilter.connect(analyser);
 
-  // Reset smoothing state so a new session starts clean
+  // Allocate HPS working buffers
+  hpsPower=new Float32Array(analyser.frequencyBinCount);
+  hpsScore=new Float32Array(analyser.frequencyBinCount);
+
+  // Reset all per-session state
   chromaSmooth.fill(0);
   noiseEst.fill(1e-7);
   notePersist.fill(0);
   noteOnset.fill(0);
+  for(var oi=0;oi<12;oi++){octaveLock[oi]=null;octaveLockCount[oi]=0;}
 }
 
 var ENV={};NOTES.forEach(function(n){ENV[n]=0;});
@@ -474,227 +476,206 @@ function freq2note(f){
 }
 var rawDetected=new Map();
 
-// yinPitch() — monophonic fundamental detector; kept for single-instrument use.
-function yinPitch(){
-  if(!analyser||!active||!timeData)return -1;
-  analyser.getFloatTimeDomainData(timeData);
-  var rms=0;
-  for(var i=0;i<2048;i++){var v=timeData[i];rms+=v*v;}
-  rms=Math.sqrt(rms/2048);
-  if(rms<0.01)return -1;
-  var sr=audioCtx.sampleRate;
-  var W=1024;
-  var TAU_MIN=Math.max(1,Math.floor(sr/1800));
-  var TAU_MAX=Math.min(Math.ceil(sr/55),W-1);
-  if(!yinDiff||yinDiff.length<=TAU_MAX){
-    yinDiff=new Float32Array(TAU_MAX+1);
-    yinCmnd=new Float32Array(TAU_MAX+1);
-  }
-  var runSum=0;
-  yinCmnd[0]=1;
-  for(var tau=1;tau<=TAU_MAX;tau++){
-    var d=0;
-    for(var i=0;i<W;i++){var delta=timeData[i]-timeData[i+tau];d+=delta*delta;}
-    yinDiff[tau]=d;
-    runSum+=d;
-    yinCmnd[tau]=runSum>0?d*tau/runSum:1;
-  }
-  var bestTau=TAU_MIN;
-  while(bestTau<TAU_MAX){
-    if(yinCmnd[bestTau]<0.15){
-      while(bestTau+1<TAU_MAX&&yinCmnd[bestTau+1]<=yinCmnd[bestTau])bestTau++;
-      break;
-    }
-    bestTau++;
-  }
-  if(bestTau>=TAU_MAX)return -1;
-  var betterTau=bestTau;
-  if(bestTau>0&&bestTau<TAU_MAX){
-    var s0=yinCmnd[bestTau-1],s1=yinCmnd[bestTau],s2=yinCmnd[bestTau+1];
-    var denom=2*(2*s1-s2-s0);
-    if(Math.abs(denom)>1e-9)betterTau=bestTau+(s2-s0)/denom;
-  }
-  return sr/betterTau;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// detectNotes — three-pass polyphonic detector
+// detectNotes — Harmonic Product Spectrum fundamental estimator
 //
-// PASS 1  Sub-harmonic folding chromagram (20–4000 Hz)
-//   Each FFT bin at freq f contributes power to pc(f/1..5) with decreasing
-//   weights so overtones reinforce their fundamental's pitch class.
-//   Frequency-dependent gain compensates for low-end under-representation.
+// PASS 1  Build linear power spectrum (20 Hz – 3 kHz)
+//   freqDataFloat (dB) → squared-normalised power in hpsPower[].
 //
-// PASS 2  Subharmonic Summation confirmation (20–200 Hz)
-//   For every candidate low-freq bin, require ≥1 harmonic above the noise
-//   floor before crediting. Confirmed fundamentals receive extra gain
-//   (×12 below 50 Hz) so 808s, kick-driven basslines and synth bass
-//   register even when the fundamental is weaker than its overtones.
+// PASS 2  HPS over candidate fundamentals 20–600 Hz
+//   score(b) = Σ power[b·h] · wt[h]  for h = 1..6
+//   Requires ≥2 harmonics above HPS_FLOOR → rejects kick-drum rumble
+//   and aharmonic noise that lack a proper harmonic series.
+//   Frequency-dependent gain (×12 below 30 Hz … ×1 above 350 Hz)
+//   corrects for sub-bass being physically quieter than overtones.
 //
-// PASS 3  Adaptive noise floor + temporal smoothing
-//   Per-class asymmetric IIR noise tracker (1% attack / 10% release).
-//   Chromagram smoothed α=0.55/0.45 each frame (~80 ms time constant).
+// PASS 3  Peak-pick HPS → octave descent
+//   Each local HPS maximum is a fundamental candidate.
+//   Descent (÷2, ÷3): if direct power at f/N ≥ DIRECT_FLOOR AND
+//   hpsScore[f/N] ≥ OCTAVE_RATIO × hpsScore[f], prefer f/N.
+//   DIRECT_FLOOR prevents false descent when only overtones are present
+//   (e.g. playing only E2 must not descend to E1).
 //
-// PASS 4  SNR confidence + hysteresis + 8-frame persistence
-//   Onset threshold 42% of peak SNR; sustain threshold 28%.
-//   Notes held for PERSIST_FRAMES after confidence drops (fading out).
-//   Top-5 by SNR emitted to ENV for color/displacement mapping.
+// PASS 4  Per-pitch-class octave hysteresis lock
+//   Once locked to an octave, require CHANGE_THRESH (5) consecutive
+//   frames of a different octave before accepting the change.
+//   Eliminates frame-to-frame octave flicker on 808s and synth bass.
+//
+// PASS 5  Temporal smoothing + adaptive noise floor (unchanged)
+//
+// PASS 6  SNR confidence + hysteresis + 8-frame persistence + top-4
 // ─────────────────────────────────────────────────────────────────────────────
 function detectNotes(){
   if(!analyser||!active)return;
 
-  // Beat / energy for displacement animation (byte data is fine here)
+  // Beat / energy for sphere displacement animation (byte data suffices)
   analyser.getByteFrequencyData(freqData);
   var energy=0;
   for(var ei=1;ei<80;ei++)energy+=freqData[ei];energy/=80;
   var eDiff=energy-smoothEnergy;smoothEnergy+=(energy-smoothEnergy)*.15;
   if(eDiff>22)beatPulse=Math.min(1,eDiff/60);
 
-  // High-precision dB spectrum for pitch analysis
   analyser.getFloatFrequencyData(freqDataFloat);
-
   var sr=audioCtx.sampleRate;
-  var binHz=sr/analyser.fftSize;
+  var binHz=sr/analyser.fftSize;         // ~1.35 Hz/bin at 44100/32768
   var numBins=analyser.frequencyBinCount;
-  var minDb=analyser.minDecibels;    // -100
+  var minDb=analyser.minDecibels;        // -100
   var dbRange=analyser.maxDecibels-minDb; // 90
-
   var loB=Math.max(1,Math.floor(20/binHz));
-  var hiB=Math.min(Math.ceil(4000/binHz),numBins-1);
 
-  rawDetected.clear();
-
-  // ── PASS 1: sub-harmonic folding chromagram ──────────────────────────────
-  var chroma=new Float32Array(12);
-  var FOLD_WT=[1.0,0.60,0.40,0.25,0.15]; // weights for harmonic orders 1-5
-
-  for(var b=loB;b<=hiB;b++){
+  // ── PASS 1: linear power spectrum 20 Hz – 3 kHz ───────────────────────
+  var hiPow=Math.min(Math.ceil(3000/binHz),numBins-1);
+  for(var b=0;b<=hiPow;b++)hpsPower[b]=0;
+  for(var b=loB;b<=hiPow;b++){
     var dB=freqDataFloat[b];
-    if(dB<=minDb+5)continue;                    // hard noise gate
-    var norm=(dB-minDb)/dbRange;                // 0–1 linear
-    var power=norm*norm;                         // power domain
-    if(power<0.002)continue;
-
-    var freq=b*binHz;
-
-    // Perceptual gain: sub-bass needs a significant boost to compete
-    // with louder mid/high content in a typical music mix.
-    var gain;
-    if(freq<30)      gain=8.0;
-    else if(freq<50) gain=6.0;
-    else if(freq<80) gain=4.0;
-    else if(freq<150)gain=2.5;
-    else if(freq<300)gain=1.8;
-    else if(freq<600)gain=1.3;
-    else if(freq>3000)gain=0.5;
-    else             gain=1.0;
-
-    var w=power*gain;
-
-    // Fold energy from this bin back toward its potential fundamental classes.
-    // A bin at freq f is potentially the N-th harmonic of f/N.
-    for(var fold=1;fold<=5;fold++){
-      var fFund=freq/fold;
-      if(fFund<20)break;
-      var mF=12*Math.log2(fFund/440)+69;
-      var pcF=((Math.round(mF)%12)+12)%12;
-      chroma[pcF]+=w*FOLD_WT[fold-1];
-    }
+    if(dB<=minDb+3)continue;
+    var nn=(dB-minDb)/dbRange;
+    hpsPower[b]=nn*nn;
   }
 
-  // ── PASS 2: SHS confirmation for 20–200 Hz fundamentals ─────────────────
-  // Only bins that also have measurable harmonic energy above them are
-  // credited — this rejects low-freq noise and kick-drum rumble that
-  // lacks a clear harmonic series.
-  var loShs=Math.max(1,Math.floor(20/binHz));
-  var hiShs=Math.min(Math.ceil(200/binHz),Math.floor(numBins/6));
+  // ── PASS 2: Harmonic Product Spectrum — candidates 20–600 Hz ──────────
+  // score(b) = Σ power[b·h]·wt[h] for h=1..6; ≥2 harmonics required.
+  var loHPS=loB;
+  var hiHPS=Math.min(Math.ceil(600/binHz),numBins-1);
+  var HARM_WT=[1.0,0.80,0.60,0.45,0.30,0.20];
+  var HPS_FLOOR=0.004; // min normalised power to count a harmonic
+  for(var b=loHPS;b<=hiHPS;b++)hpsScore[b]=0;
 
-  for(var b=loShs;b<=hiShs;b++){
-    var dB=freqDataFloat[b];
-    if(dB<=minDb+6)continue;
-    var p0=(dB-minDb)/dbRange;
-    if(p0<0.06)continue;
-
+  for(var b=loHPS;b<=hiHPS;b++){
     var freq=b*binHz;
-    var shsSum=p0;
-    var harmonicsFound=0;
-
-    for(var h=2;h<=6;h++){
+    var score=0,found=0;
+    for(var h=1;h<=6;h++){
       var bh=Math.round(b*h);
       if(bh>=numBins)break;
-      var dbH=freqDataFloat[bh];
-      if(dbH>minDb+6){
-        shsSum+=((dbH-minDb)/dbRange)*(0.8/(h-1));
-        harmonicsFound++;
+      var p=hpsPower[bh];
+      if(p>=HPS_FLOOR){score+=p*HARM_WT[h-1];found++;}
+    }
+    if(found<2)continue; // reject bins with no harmonic structure
+    // Sub-bass gain: 20–80 Hz fundamentals are quieter than their overtones
+    // in typical recordings; this corrects for that spectral bias.
+    var gain;
+    if(freq<30)      gain=12.0;
+    else if(freq<50) gain=8.0;
+    else if(freq<80) gain=5.0;
+    else if(freq<120)gain=3.0;
+    else if(freq<200)gain=2.0;
+    else if(freq<350)gain=1.4;
+    else             gain=1.0;
+    hpsScore[b]=score*gain;
+  }
+
+  // ── PASS 3: peak-pick HPS + octave descent to lowest valid fundamental ─
+  // DIRECT_FLOOR: minimum direct power required at the sub-octave bin to
+  // allow descent — prevents false E2→E1 descent when only E2 is playing.
+  var OCTAVE_RATIO=0.20;
+  var DIRECT_FLOOR=0.008;
+  var newFunds=[];
+
+  for(var b=loHPS+1;b<hiHPS;b++){
+    if(hpsScore[b]<=0)continue;
+    if(hpsScore[b]<hpsScore[b-1]||hpsScore[b]<hpsScore[b+1])continue;
+    // Sub-bin precision via parabolic interpolation
+    var s0=hpsScore[b-1],s1=hpsScore[b],s2=hpsScore[b+1];
+    var denom=2*(2*s1-s2-s0);
+    var fineFreq=b*binHz+(denom>1e-9?binHz*(s2-s0)/denom:0);
+    var peakScore=s1;
+    var realFreq=fineFreq;
+
+    // Descend to sub-octave if both direct energy AND HPS score support it.
+    for(var div=2;div<=3;div++){
+      var subFreq=fineFreq/div;
+      if(subFreq<18)break;
+      var subBin=Math.round(subFreq/binHz);
+      if(subBin<loHPS)break;
+      if(hpsPower[subBin]>=DIRECT_FLOOR&&hpsScore[subBin]>=peakScore*OCTAVE_RATIO){
+        realFreq=subFreq;
       }
     }
 
-    if(harmonicsFound<1)continue; // must confirm with at least one harmonic
-
-    var mF=12*Math.log2(freq/440)+69;
-    var pcF=((Math.round(mF)%12)+12)%12;
-    // Extra gain scales with how low the fundamental is — the very lowest
-    // frequencies (808s, sub-bass synths) need the most reinforcement.
-    var shsGain=freq<50?12:(freq<80?8:(freq<120?5:3));
-    chroma[pcF]+=shsSum*shsSum*shsGain;
+    var midi=12*Math.log2(realFreq/440)+69;
+    var midiR=Math.round(midi);
+    var pc=((midiR%12)+12)%12;
+    var oct=Math.floor(midiR/12)-1;
+    newFunds.push({freq:realFreq,score:peakScore,pc:pc,octave:oct});
   }
 
-  // ── PASS 3: temporal smoothing + adaptive per-class noise floor ──────────
+  // Best candidate per pitch class (highest HPS peak score wins)
+  newFunds.sort(function(a,b){return b.score-a.score;});
+  var pcBest={};
+  newFunds.forEach(function(f){
+    if(!pcBest[f.pc]||f.score>pcBest[f.pc].score)pcBest[f.pc]=f;
+  });
+
+  // ── PASS 4: octave hysteresis lock ─────────────────────────────────────
+  // Require CHANGE_THRESH consecutive frames of a new octave before
+  // accepting the change. Prevents flicker when sub-bass fundamental
+  // amplitude varies frame-to-frame.
+  var CHANGE_THRESH=5;
+  var pcScores=new Float32Array(12);
   for(var ci=0;ci<12;ci++){
-    // Exponential smoothing: 55% previous frame, 45% current
-    chromaSmooth[ci]=chromaSmooth[ci]*0.55+chroma[ci]*0.45;
-    // Asymmetric noise tracker: slow rise (1%), faster fall (10%)
+    var best=pcBest[ci];
+    if(!best){octaveLockCount[ci]=0;continue;}
+    if(octaveLock[ci]===null){
+      octaveLock[ci]=best.octave;octaveLockCount[ci]=0;
+    }else if(best.octave!==octaveLock[ci]){
+      octaveLockCount[ci]++;
+      if(octaveLockCount[ci]>=CHANGE_THRESH){octaveLock[ci]=best.octave;octaveLockCount[ci]=0;}
+      else{best.octave=octaveLock[ci];} // hold current lock
+    }else{
+      octaveLockCount[ci]=0;
+    }
+    pcScores[ci]=best.score;
+  }
+
+  // ── PASS 5: temporal smoothing + adaptive noise floor ──────────────────
+  for(var ci=0;ci<12;ci++){
+    chromaSmooth[ci]=chromaSmooth[ci]*0.55+pcScores[ci]*0.45;
     var rate=chromaSmooth[ci]>noiseEst[ci]?0.01:0.10;
     noiseEst[ci]+=(chromaSmooth[ci]-noiseEst[ci])*rate;
     noiseEst[ci]=Math.max(noiseEst[ci],1e-7);
   }
 
-  // ── PASS 4: SNR confidence, hysteresis, persistence, top-5 selection ─────
+  // ── PASS 6: SNR confidence + hysteresis + 8-frame persistence + top-4 ──
   var maxSNR=0;
   var snr=new Float32Array(12);
   for(var ci=0;ci<12;ci++){
     snr[ci]=chromaSmooth[ci]/(noiseEst[ci]*2+1e-7);
     if(snr[ci]>maxSNR)maxSNR=snr[ci];
   }
-
   if(maxSNR<2.0){
-    // Silence or pure noise — decay everything and clear persistence
     NOTES.forEach(function(n){ENV[n]*=(1-DECAY);if(ENV[n]<.005)ENV[n]=0;});
-    notePersist.fill(0);
-    noteOnset.fill(0);
+    notePersist.fill(0);noteOnset.fill(0);
     return;
   }
 
+  rawDetected.clear();
   var candidates=[];
-
   for(var ci=0;ci<12;ci++){
     var normSnr=snr[ci]/maxSNR;
-    // Hysteresis: higher threshold to start (42%), lower to keep active (28%)
     var activeThr=noteOnset[ci]?0.28:0.42;
-
     if(normSnr>=activeThr){
-      noteOnset[ci]=1;
-      notePersist[ci]=PERSIST_FRAMES;
+      noteOnset[ci]=1;notePersist[ci]=PERSIST_FRAMES;
       candidates.push({idx:ci,snr:snr[ci],norm:normSnr});
     }else{
       noteOnset[ci]=0;
       if(notePersist[ci]>0){
         notePersist[ci]--;
-        // Still within persistence window — emit at fading confidence
         var fadeNorm=(notePersist[ci]/PERSIST_FRAMES)*normSnr;
         candidates.push({idx:ci,snr:snr[ci]*0.5,norm:Math.max(0,fadeNorm)});
       }
     }
   }
 
-  // Sort by descending SNR, keep at most 5 musically significant notes
   candidates.sort(function(a,b){return b.snr-a.snr;});
-  if(candidates.length>5)candidates.length=5;
+  if(candidates.length>4)candidates.length=4; // accuracy over quantity
 
   candidates.forEach(function(c){
     var n=NOTES[c.idx];
+    var best=pcBest[c.idx];
+    // Use current-frame octave if available; fall back to last locked octave
+    var oct=best?best.octave:(octaveLock[c.idx]!==null?octaveLock[c.idx]:'');
     var intensity=Math.min(1,Math.max(0.15,c.norm*0.85+0.15));
-    rawDetected.set(n,{name:n,octave:'',cents:0,intensity:intensity});
+    rawDetected.set(n,{name:n,octave:oct,cents:0,intensity:intensity});
   });
 
   NOTES.forEach(function(n){
