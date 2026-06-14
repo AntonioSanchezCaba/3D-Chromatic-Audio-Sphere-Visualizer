@@ -147,7 +147,7 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
 }
 #ytWrap iframe{width:100%!important;height:100%!important;display:block}
 .yt-hint{font-size:10px;color:rgba(255,255,255,.32);margin-top:7px;line-height:1.8;
-  padding:8px 11px;background:rgba(220,38,38,.06);
+  padding:8px 11px;background:rgba(220,38,34,.06);
   border:1px solid rgba(220,38,38,.15);border-radius:9px;}
 .yt-hint b{color:rgba(255,255,255,.65);font-weight:600}
 .mobile-note{
@@ -273,7 +273,6 @@ var scene=new THREE.Scene();
 var cam=new THREE.PerspectiveCamera(58,window.innerWidth/window.innerHeight,.1,300);
 cam.position.set(0,0,6);
 
-// Background star particles
 var PC=2200;
 var pG=new THREE.BufferGeometry();
 var pp=new Float32Array(PC*3),pc=new Float32Array(PC*3);
@@ -286,12 +285,10 @@ pG.setAttribute('position',new THREE.BufferAttribute(pp,3));
 pG.setAttribute('color',new THREE.BufferAttribute(pc,3));
 scene.add(new THREE.Points(pG,new THREE.PointsMaterial({size:.14,vertexColors:true,transparent:true,opacity:.6,blending:THREE.AdditiveBlending,depthWrite:false})));
 
-// Main sphere
 var SEG=128;
 var sGeo=new THREE.SphereGeometry(2,SEG,SEG);
 var cnt=sGeo.attributes.position.count;
 var vcArr=new Float32Array(cnt*3);
-// Start with a chromatic gradient instead of flat dark blue
 for(var vi=0;vi<cnt;vi++){
   var bx0=sGeo.attributes.position.getX(vi);
   var by0=sGeo.attributes.position.getY(vi);
@@ -312,17 +309,14 @@ var sMat=new THREE.MeshPhongMaterial({
 var sphere=new THREE.Mesh(sGeo,sMat);scene.add(sphere);
 var basePos=Float32Array.from(sGeo.attributes.position.array);
 
-// Glow shell
 var gGeo=new THREE.SphereGeometry(2.3,32,32);
 var gMat=new THREE.MeshBasicMaterial({color:0x7744ff,transparent:true,opacity:.08,blending:THREE.AdditiveBlending,depthWrite:false});
 var gSph=new THREE.Mesh(gGeo,gMat);scene.add(gSph);
 
-// Outer haze
 var hGeo=new THREE.SphereGeometry(2.7,24,24);
 var hMat=new THREE.MeshBasicMaterial({color:0x4422aa,transparent:true,opacity:.04,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.BackSide});
 scene.add(new THREE.Mesh(hGeo,hMat));
 
-// Lighting - richer and more colorful
 scene.add(new THREE.AmbientLight(0x2a2060,1.8));
 var kL=new THREE.PointLight(0xffffff,2.0,70);kL.position.set(5,6,5);
 var fL=new THREE.PointLight(0x44aaff,1.4,70);fL.position.set(-6,-4,5);
@@ -403,6 +397,8 @@ toggleBtn.addEventListener('click',togglePanel);
 var audioCtx,analyser,freqData,audioEl,audioSrc,stream,active=false;
 function mkAnalyser(){
   if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  // Chrome/Edge suspend AudioContext until user interaction; always wake it here
+  audioCtx.resume();
   analyser=audioCtx.createAnalyser();
   analyser.fftSize=8192;analyser.smoothingTimeConstant=0.55;
   freqData=new Uint8Array(analyser.frequencyBinCount);
@@ -445,14 +441,12 @@ function detectNotes(){
   });
 }
 
-// Idle: slow chromatic color wave across the sphere surface
 function idleVisualize(t){
   var posAttr=sGeo.attributes.position,colAttr=sGeo.attributes.color;
   for(var i=0;i<cnt;i++){
     var i3=i*3;
     var bx=basePos[i3],by=basePos[i3+1],bz=basePos[i3+2];
     var phi=vertPhi[i],theta=vertTheta[i];
-    // Hue sweeps slowly around the sphere, different on each axis
     var hue=((phi/Math.PI*0.55+(theta+Math.PI)/(2*Math.PI)*0.45+t*0.06)%1+1)%1;
     var rgb=hsl2rgb(hue*360,0.78,0.42);
     var rate=0.018;
@@ -460,25 +454,18 @@ function idleVisualize(t){
     smoothC[i3+1]+=(rgb.g-smoothC[i3+1])*rate;
     smoothC[i3+2]+=(rgb.b-smoothC[i3+2])*rate;
     colAttr.setXYZ(i,smoothC[i3],smoothC[i3+1],smoothC[i3+2]);
-    // Gentle breathing pulse
     var pulse=1+Math.sin(t*1.1+phi*1.5)*0.014;
     posAttr.setXYZ(i,bx*pulse,by*pulse,bz*pulse);
   }
   posAttr.needsUpdate=true;colAttr.needsUpdate=true;
-  // Glow shell cycles through hue
   var gh=((t*0.045)%1+1)%1;
   var gc=hsl2rgb(gh*360,1.0,0.6);
   gMat.color.setRGB(gc.r,gc.g,gc.b);
   gMat.opacity=0.09+Math.sin(t*0.7)*0.025;
-  sMat.emissive.setRGB(
-    smoothC[0]*0.4,
-    smoothC[1]*0.4,
-    smoothC[2]*0.4
-  );
+  sMat.emissive.setRGB(smoothC[0]*0.4,smoothC[1]*0.4,smoothC[2]*0.4);
   sMat.emissiveIntensity=1.0+Math.sin(t*1.4)*0.15;
 }
 
-// Audio-reactive visualization
 function audioVisualize(t){
   beatPulse*=0.90;
   var posAttr=sGeo.attributes.position,colAttr=sGeo.attributes.color;
@@ -539,8 +526,7 @@ function updateUI(){
       var h=NOTE_HUE[n],e=ENV[n];
       var el=document.createElement('div');el.className='ntag';
       el.style.background='hsl('+h+',88%,52%)';el.style.color=(h>45&&h<200)?'#000':'#fff';
-      el.style.opacity=.4+e*.6;el.style.transform='scale('+((.85+e*.2))+')';
-      var oct=rawDetected.has(n)?rawDetected.get(n).octave:'';
+      el.style.opacity=.4+e*.6;el.style.transform='scale('+((.85+e*.2))+')';      var oct=rawDetected.has(n)?rawDetected.get(n).octave:'';
       el.innerHTML='<div class="ndot" style="background:rgba(0,0,0,.3)"></div>'+n+oct;
       row.appendChild(el);
     });
@@ -558,11 +544,7 @@ function animate(ts){
   requestAnimationFrame(animate);
   var t=ts*.001;
   detectNotes();
-  if(active){
-    audioVisualize(t);
-  }else{
-    idleVisualize(t);
-  }
+  if(active){audioVisualize(t);}else{idleVisualize(t);}
   updateUI();
   var totalEnv=active?NOTES.reduce(function(s,n){return s+ENV[n];},0):0;
   var target=.0014+beatPulse*.015+totalEnv*.0005;
@@ -611,6 +593,9 @@ function captureTab(triggerBtn,fromYT){
     stream.getVideoTracks().forEach(function(t){t.stop();stream.removeTrack(t);});
     if(!stream.getAudioTracks().length)throw new Error('No audio track');
     mkAnalyser();
+    // audioCtx.resume() is already called inside mkAnalyser(), but call again
+    // explicitly here to guarantee it runs inside the user-gesture async chain
+    audioCtx.resume();
     audioCtx.createMediaStreamSource(stream).connect(analyser);
     active=true;
     stream.getAudioTracks()[0].onended=stopAll;
