@@ -44,6 +44,7 @@ body{font-family:'Inter',sans-serif;background:#030308;overflow:hidden;height:10
   #stopBtn:disabled{display:none}
   #ytWrap{display:none!important}
   .yt-hint{display:none}
+  #ytCapBtn{display:none}
   #wheelSection,.desktop-sub{display:none}
   #hint{display:none}
 }
@@ -150,6 +151,8 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
   padding:8px 11px;background:rgba(220,38,34,.06);
   border:1px solid rgba(220,38,38,.15);border-radius:9px;}
 .yt-hint b{color:rgba(255,255,255,.65);font-weight:600}
+.yt-divider{border:none;border-top:1px solid rgba(255,255,255,.05);margin:8px 0}
+.yt-play-hint{font-size:10px;color:rgba(255,255,255,.28);margin-top:6px;line-height:1.7}
 
 #wheel{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-top:8px}
 .wc{border-radius:7px;aspect-ratio:1;display:flex;align-items:center;
@@ -192,7 +195,10 @@ hr{border:none;border-top:1px solid rgba(255,255,255,0.05);margin:12px 0}
   </div>
   <div id="ytWrap"><div id="yt-player"></div></div>
   <div id="ytActions" style="display:none">
-    <div class="yt-hint">&#9654; <b>Play</b> the video &mdash; sphere animates automatically.<br>&#9208; <b>Pause</b> to freeze the sphere.</div>
+    <button id="ytCapBtn" class="btn btn-yt" style="margin-top:8px">&#127911; Detect Notes from This Video</button>
+    <div class="yt-hint">In the share dialog: pick <b>This Tab</b>, enable <b>Share tab audio</b>, click <b>Share</b>.</div>
+    <hr class="yt-divider">
+    <div class="yt-play-hint">&#9654; <b>Play / Pause</b> the video to animate or freeze the sphere without note detection.</div>
   </div>
   <hr>
   <div class="lbl">Live Capture</div>
@@ -236,7 +242,6 @@ function hsl2rgb(h,s,l){
   return{r:r,g:g,b:b};
 }
 
-// l=0.62 so note colors read clearly through the Phong lighting
 var NOTE_RGB={};
 NOTES.forEach(function(n){NOTE_RGB[n]=hsl2rgb(NOTE_HUE[n],1,0.62);});
 
@@ -490,20 +495,15 @@ function ytVisualize(t){
   sMat.emissiveIntensity=1.1+ytBeat*1.0;
 }
 
-// audioVisualize: sphere color = weighted average of all active note colors.
-// Computing the mix outside the vertex loop means every vertex shares the
-// same base hue, so the note→color link is direct and obvious:
-//   C playing → whole sphere turns red
-//   A playing → whole sphere turns violet
-//   chord     → blend of the chord's note colors
-// A small per-vertex shimmer keeps the surface alive without hiding the note.
+// Sphere color = weighted average of active note colors so the connection
+// between detected notes and the sphere hue is direct and obvious.
 function audioVisualize(t){
   beatPulse*=0.90;
   var posAttr=sGeo.attributes.position,colAttr=sGeo.attributes.color;
   var totalEnv=0;
   NOTES.forEach(function(n){totalEnv+=ENV[n];});
 
-  // Weighted color mix from all active notes — computed once, outside vertex loop
+  // Weighted color mix computed once outside the vertex loop
   var mixR=0,mixG=0,mixB=0,mixSum=0;
   NOTES.forEach(function(n){
     var e=ENV[n];if(e<.005)return;
@@ -517,8 +517,6 @@ function audioVisualize(t){
     var fR,fG,fB;
     if(mixSum>.01){
       var bR=mixR/mixSum,bG=mixG/mixSum,bB=mixB/mixSum;
-      // Small shimmer so the surface stays alive; amplitude kept low
-      // so the note's base color always dominates
       var sh=Math.sin(phi*5+theta*3+t*2.2)*0.06*(0.4+totalEnv);
       fR=Math.max(0,Math.min(0.95,bR+sh));
       fG=Math.max(0,Math.min(0.95,bG+sh));
@@ -538,8 +536,6 @@ function audioVisualize(t){
     var sc=1+disp;posAttr.setXYZ(i,bx*sc,by*sc,bz*sc);
   }
   posAttr.needsUpdate=true;colAttr.needsUpdate=true;
-
-  // Glow sphere and emissive follow dominant note color
   var domNote=NOTES.reduce(function(a,b){return ENV[a]>ENV[b]?a:b;});
   if(ENV[domNote]>.05){
     var rgb=NOTE_RGB[domNote];
@@ -556,7 +552,7 @@ function audioVisualize(t){
 var lastUIUpdate=0;
 function updateUI(){
   var now=Date.now();if(now-lastUIUpdate<80)return;lastUIUpdate=now;
-  if(freqData){
+  if(freqData&&active){
     var step=Math.floor(freqData.length/SB/2);
     sbEls.forEach(function(b,i){var v=freqData[i*step]/255;b.style.height=Math.max(2,v*26)+'px';b.style.opacity=.35+v*.65;});
   }
@@ -647,12 +643,14 @@ function captureTab(triggerBtn){
     active=true;
     stream.getAudioTracks()[0].onended=stopAll;
     stopBtn.disabled=false;
-    lvEl.innerHTML='<div class="live"><div class="pd"></div>Capturing tab audio&hellip;</div>';
+    // Resume the embedded YouTube video if it was playing before capture started
+    if(ytPlayer)try{ytPlayer.playVideo();}catch(e){}
+    lvEl.innerHTML='<div class="live"><div class="pd"></div>Detecting notes&hellip;</div>';
     lvEl.style.display='block';
     triggerBtn.innerHTML=origLabel;
     triggerBtn.disabled=false;
   }).catch(function(){
-    alert('Audio capture failed.\n\n- Select a tab in the dialog\n- Enable "Share tab audio"\n- Click Share');
+    alert('Audio capture failed.\n\n- Select THIS tab in the dialog\n- Enable "Share tab audio"\n- Click Share');
     triggerBtn.innerHTML=origLabel;
     triggerBtn.disabled=false;
   });
@@ -689,9 +687,10 @@ window.onYouTubeIframeAPIReady=function(){ytApiReady=true;};
 
 function handleYtState(state){
   if(state===1){
+    // PLAYING: only drive ytVisualize if real audio capture is not active
     if(!active){
       ytActive=true;ytFrozen=false;
-      lvEl.innerHTML='<div class="live"><div class="pd"></div>YouTube playing &mdash; sphere synced</div>';
+      lvEl.innerHTML='<div class="live"><div class="pd"></div>YouTube playing &mdash; sphere synced (no note detection)</div>';
       lvEl.style.display='block';
       stopBtn.disabled=false;
     }
@@ -739,6 +738,7 @@ document.getElementById('ytLoad').addEventListener('click',function(){
   loadYouTubeVideo(id);
 });
 document.getElementById('ytUrl').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('ytLoad').click();});
+document.getElementById('ytCapBtn').addEventListener('click',function(){captureTab(this);});
 </script>
 </body>
 </html>
