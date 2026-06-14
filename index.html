@@ -394,15 +394,23 @@ function togglePanel(){
 toggleBtn.addEventListener('click',togglePanel);
 
 // ---- AUDIO ----
-var audioCtx,analyser,freqData,audioEl,audioSrc,stream,active=false;
+var audioCtx,analyser,freqData,timeData,lpFilter,audioEl,audioSrc,stream,active=false;
 var ytActive=false,ytFrozen=false,ytBeat=0;
+var yinDiff=null,yinCmnd=null;
 
 function mkAnalyser(){
   if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   audioCtx.resume();
+  // Low-pass filter attenuates harmonics above ~2800 Hz before analysis
+  lpFilter=audioCtx.createBiquadFilter();
+  lpFilter.type='lowpass';
+  lpFilter.frequency.value=2800;
+  lpFilter.Q.value=0.707;
   analyser=audioCtx.createAnalyser();
   analyser.fftSize=8192;analyser.smoothingTimeConstant=0.55;
   freqData=new Uint8Array(analyser.frequencyBinCount);
+  timeData=new Float32Array(2048);
+  lpFilter.connect(analyser);
 }
 
 var ENV={};NOTES.forEach(function(n){ENV[n]=0;});
@@ -415,26 +423,74 @@ function freq2note(f){
 }
 var rawDetected=new Map();
 
+// YIN pitch detection — finds fundamental period in time domain,
+// immune to harmonic confusion that plagues FFT peak-picking.
+function yinPitch(){
+  if(!analyser||!active||!timeData)return -1;
+  analyser.getFloatTimeDomainData(timeData);
+  var rms=0;
+  for(var i=0;i<2048;i++){var v=timeData[i];rms+=v*v;}
+  rms=Math.sqrt(rms/2048);
+  if(rms<0.01)return -1;
+  var sr=audioCtx.sampleRate;
+  var W=1024;
+  var TAU_MIN=Math.max(1,Math.floor(sr/1800));
+  var TAU_MAX=Math.min(Math.ceil(sr/55),W-1);
+  if(!yinDiff||yinDiff.length<=TAU_MAX){
+    yinDiff=new Float32Array(TAU_MAX+1);
+    yinCmnd=new Float32Array(TAU_MAX+1);
+  }
+  // Cumulative mean normalised difference function (YIN steps 1+2)
+  var runSum=0;
+  yinCmnd[0]=1;
+  for(var tau=1;tau<=TAU_MAX;tau++){
+    var d=0;
+    for(var i=0;i<W;i++){var delta=timeData[i]-timeData[i+tau];d+=delta*delta;}
+    yinDiff[tau]=d;
+    runSum+=d;
+    yinCmnd[tau]=runSum>0?d*tau/runSum:1;
+  }
+  // Find first local minimum below threshold (YIN step 3)
+  var bestTau=TAU_MIN;
+  while(bestTau<TAU_MAX){
+    if(yinCmnd[bestTau]<0.15){
+      while(bestTau+1<TAU_MAX&&yinCmnd[bestTau+1]<=yinCmnd[bestTau])bestTau++;
+      break;
+    }
+    bestTau++;
+  }
+  if(bestTau>=TAU_MAX)return -1;
+  // Parabolic interpolation for sub-sample accuracy (YIN step 4)
+  var betterTau=bestTau;
+  if(bestTau>0&&bestTau<TAU_MAX){
+    var s0=yinCmnd[bestTau-1],s1=yinCmnd[bestTau],s2=yinCmnd[bestTau+1];
+    var denom=2*(2*s1-s2-s0);
+    if(Math.abs(denom)>1e-9)betterTau=bestTau+(s2-s0)/denom;
+  }
+  return sr/betterTau;
+}
+
 function detectNotes(){
   if(!analyser||!active)return;
+  // FFT still used for beat/energy detection only
   analyser.getByteFrequencyData(freqData);
-  var sr=audioCtx.sampleRate,bw=sr/analyser.fftSize;
-  rawDetected.clear();
   var energy=0;
   for(var ei=1;ei<80;ei++)energy+=freqData[ei];energy/=80;
   var diff=energy-smoothEnergy;smoothEnergy+=(energy-smoothEnergy)*.15;
   if(diff>22)beatPulse=Math.min(1,diff/60);
-  var WIN=3,THR=70;
-  for(var fi=WIN;fi<Math.min(freqData.length-WIN,3500);fi++){
-    var amp=freqData[fi];if(amp<THR)continue;
-    var peak=true;
-    for(var fj=-WIN;fj<=WIN;fj++){if(fj&&freqData[fi+fj]>=amp){peak=false;break;}}
-    if(!peak)continue;
-    var freq=fi*bw;if(freq<55||freq>4800)continue;
-    var info=freq2note(freq);if(Math.abs(info.cents)>60)continue;
-    var intensity=Math.min(1,(amp-THR)/(255-THR)),k=info.name;
-    if(!rawDetected.has(k)||rawDetected.get(k).intensity<intensity)
-      rawDetected.set(k,{name:info.name,octave:info.octave,cents:info.cents,intensity:intensity});
+  rawDetected.clear();
+  var pitch=yinPitch();
+  if(pitch>55&&pitch<1800){
+    var info=freq2note(pitch);
+    if(Math.abs(info.cents)<45){
+      var sr=audioCtx.sampleRate;
+      var binIdx=Math.round(pitch*analyser.fftSize/sr);
+      binIdx=Math.max(0,Math.min(freqData.length-1,binIdx));
+      var intensity=Math.min(1,Math.max(0,(freqData[binIdx]-30)/200));
+      if(intensity>0.015){
+        rawDetected.set(info.name,{name:info.name,octave:info.octave,cents:info.cents,intensity:intensity});
+      }
+    }
   }
   NOTES.forEach(function(n){
     if(rawDetected.has(n)){ENV[n]+=(rawDetected.get(n).intensity-ENV[n])*ATTACK;}
@@ -613,6 +669,7 @@ function stopAll(){
   if(stream){stream.getTracks().forEach(function(t){t.stop();});stream=null;}
   if(audioEl)audioEl.pause();
   if(audioSrc)try{audioSrc.disconnect();}catch(e){}
+  if(lpFilter)try{lpFilter.disconnect();}catch(e){}
   if(ytPlayer)try{ytPlayer.pauseVideo();}catch(e){}
   active=false;
   NOTES.forEach(function(n){ENV[n]=0;});
@@ -622,8 +679,7 @@ function stopAll(){
 }
 
 // selfBrowserSurface:'include' (Chrome 107+) makes the current tab appear
-// in the share dialog so the user can capture the embedded iframe's audio
-// without navigating to a separate YouTube tab.
+// in the share dialog so the user can capture the embedded iframe audio.
 // preferCurrentTab:true pre-selects it so the user only needs to click Share.
 function captureTab(triggerBtn){
   if(!canCapture){
@@ -645,7 +701,7 @@ function captureTab(triggerBtn){
     if(!stream.getAudioTracks().length)throw new Error('No audio track');
     mkAnalyser();
     audioCtx.resume();
-    audioCtx.createMediaStreamSource(stream).connect(analyser);
+    audioCtx.createMediaStreamSource(stream).connect(lpFilter);
     active=true;
     stream.getAudioTracks()[0].onended=stopAll;
     stopBtn.disabled=false;
@@ -665,7 +721,7 @@ function initFile(file){
   audioEl=new Audio();
   audioEl.src=URL.createObjectURL(file);
   audioSrc=audioCtx.createMediaElementSource(audioEl);
-  audioSrc.connect(analyser);analyser.connect(audioCtx.destination);
+  audioSrc.connect(lpFilter);analyser.connect(audioCtx.destination);
   playBtn.disabled=false;pauseBtn.disabled=false;
 }
 
