@@ -397,15 +397,14 @@ toggleBtn.addEventListener('click',togglePanel);
 var audioCtx,analyser,freqData,freqDataFloat,timeData,lpFilter,audioEl,audioSrc,stream,active=false;
 var ytActive=false,ytFrozen=false,ytBeat=0;
 var watchdogTimer=null;
-// Pre-allocated chromagram / HPS state
-var chromaSmooth=new Float32Array(12);  // temporally smoothed pitch-class energy
-var noiseEst=new Float32Array(12);      // per-class adaptive noise floor
-var notePersist=new Int32Array(12);     // frames remaining in persistence window
-var noteOnset=new Uint8Array(12);       // hysteresis state (0=off, 1=on)
-var PERSIST_FRAMES=8;                   // ~133 ms at 60 fps
-var hpsPower=null,hpsScore=null;        // linear power + HPS score arrays, sized in mkAnalyser()
-var octaveLock=new Array(12).fill(null);// locked octave per pitch class; null = not yet locked
-var octaveLockCount=new Int32Array(12); // consecutive frames a new (different) octave has been seen
+var chromaSmooth=new Float32Array(12);
+var noiseEst=new Float32Array(12);
+var notePersist=new Int32Array(12);
+var noteOnset=new Uint8Array(12);
+var PERSIST_FRAMES=8;
+var hpsPower=null,hpsScore=null;
+var octaveLock=new Array(12).fill(null);
+var octaveLockCount=new Int32Array(12);
 
 function resumeAudioCtx(){
   if(audioCtx&&audioCtx.state!=='running')audioCtx.resume().catch(function(){});
@@ -436,29 +435,21 @@ function mkAnalyser(){
   if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   audioCtx.resume();
   audioCtx.onstatechange=function(){if(active)resumeAudioCtx();};
-
-  // Pass harmonics up to 18 kHz for HPS to find fundamentals from overtones.
   lpFilter=audioCtx.createBiquadFilter();
   lpFilter.type='lowpass';
   lpFilter.frequency.value=18000;
   lpFilter.Q.value=0.5;
-
   analyser=audioCtx.createAnalyser();
-  analyser.fftSize=32768;              // ~1.35 Hz/bin at 44100 Hz; reliable to 20 Hz
+  analyser.fftSize=32768;
   analyser.smoothingTimeConstant=0.80;
   analyser.minDecibels=-100;
   analyser.maxDecibels=-10;
-
   freqData=new Uint8Array(analyser.frequencyBinCount);
   freqDataFloat=new Float32Array(analyser.frequencyBinCount);
   timeData=new Float32Array(2048);
   lpFilter.connect(analyser);
-
-  // Allocate HPS working buffers
   hpsPower=new Float32Array(analyser.frequencyBinCount);
   hpsScore=new Float32Array(analyser.frequencyBinCount);
-
-  // Reset all per-session state
   chromaSmooth.fill(0);
   noiseEst.fill(1e-7);
   notePersist.fill(0);
@@ -477,38 +468,26 @@ function freq2note(f){
 var rawDetected=new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// detectNotes — Harmonic Product Spectrum fundamental estimator
+// detectNotes — HPS fundamental estimator with Perfect Fifth suppression
 //
 // PASS 1  Build linear power spectrum (20 Hz – 3 kHz)
-//   freqDataFloat (dB) → squared-normalised power in hpsPower[].
-//
-// PASS 2  HPS over candidate fundamentals 20–600 Hz
-//   score(b) = Σ power[b·h] · wt[h]  for h = 1..6
-//   Requires ≥2 harmonics above HPS_FLOOR → rejects kick-drum rumble
-//   and aharmonic noise that lack a proper harmonic series.
-//   Frequency-dependent gain (×12 below 30 Hz … ×1 above 350 Hz)
-//   corrects for sub-bass being physically quieter than overtones.
-//
-// PASS 3  Peak-pick HPS → octave descent
-//   Each local HPS maximum is a fundamental candidate.
-//   Descent (÷2, ÷3): if direct power at f/N ≥ DIRECT_FLOOR AND
-//   hpsScore[f/N] ≥ OCTAVE_RATIO × hpsScore[f], prefer f/N.
-//   DIRECT_FLOOR prevents false descent when only overtones are present
-//   (e.g. playing only E2 must not descend to E1).
-//
-// PASS 4  Per-pitch-class octave hysteresis lock
-//   Once locked to an octave, require CHANGE_THRESH (5) consecutive
-//   frames of a different octave before accepting the change.
-//   Eliminates frame-to-frame octave flicker on 808s and synth bass.
-//
-// PASS 5  Temporal smoothing + adaptive noise floor (unchanged)
-//
+// PASS 2  HPS score(b) = Σ power[b·h]·wt[h] h=1..6; requires ≥2 harmonics
+//         HARM_WT[2] (h=3, the Perfect Fifth harmonic) reduced 0.60→0.40
+//         to limit the score a ghost-fifth candidate inherits from the real note
+// PASS 3  Peak-pick HPS → octave descent (direct-power gated)
+// PASS 3b Perfect Fifth ghost suppression
+//         fifthBelow = (ci−7+12)%12  (e.g. ci=A → fifthBelow=D)
+//         if rawPcScore[fifthBelow] ≥ FIFTH_RATIO × rawPcScore[ci],
+//         delete pcBest[ci] — it is the 3rd-harmonic artifact of fifthBelow
+//         Ratio check uses per-frame HPS scores, not smoothed values, so
+//         genuine D+A chords (ratio ~1:1) are never suppressed
+// PASS 4  Per-pitch-class octave hysteresis lock (5-frame gate)
+// PASS 5  Temporal smoothing + adaptive noise floor
 // PASS 6  SNR confidence + hysteresis + 8-frame persistence + top-4
 // ─────────────────────────────────────────────────────────────────────────────
 function detectNotes(){
   if(!analyser||!active)return;
 
-  // Beat / energy for sphere displacement animation (byte data suffices)
   analyser.getByteFrequencyData(freqData);
   var energy=0;
   for(var ei=1;ei<80;ei++)energy+=freqData[ei];energy/=80;
@@ -517,10 +496,10 @@ function detectNotes(){
 
   analyser.getFloatFrequencyData(freqDataFloat);
   var sr=audioCtx.sampleRate;
-  var binHz=sr/analyser.fftSize;         // ~1.35 Hz/bin at 44100/32768
+  var binHz=sr/analyser.fftSize;
   var numBins=analyser.frequencyBinCount;
-  var minDb=analyser.minDecibels;        // -100
-  var dbRange=analyser.maxDecibels-minDb; // 90
+  var minDb=analyser.minDecibels;
+  var dbRange=analyser.maxDecibels-minDb;
   var loB=Math.max(1,Math.floor(20/binHz));
 
   // ── PASS 1: linear power spectrum 20 Hz – 3 kHz ───────────────────────
@@ -533,12 +512,13 @@ function detectNotes(){
     hpsPower[b]=nn*nn;
   }
 
-  // ── PASS 2: Harmonic Product Spectrum — candidates 20–600 Hz ──────────
-  // score(b) = Σ power[b·h]·wt[h] for h=1..6; ≥2 harmonics required.
+  // ── PASS 2: Harmonic Product Spectrum, candidates 20–600 Hz ──────────
+  // HARM_WT[2] (h=3, the Perfect Fifth harmonic) is reduced to 0.40 from
+  // 0.60 to limit score bleed from the 3rd harmonic into the fifth-above.
   var loHPS=loB;
   var hiHPS=Math.min(Math.ceil(600/binHz),numBins-1);
-  var HARM_WT=[1.0,0.80,0.60,0.45,0.30,0.20];
-  var HPS_FLOOR=0.004; // min normalised power to count a harmonic
+  var HARM_WT=[1.0,0.80,0.40,0.35,0.25,0.15];
+  var HPS_FLOOR=0.004;
   for(var b=loHPS;b<=hiHPS;b++)hpsScore[b]=0;
 
   for(var b=loHPS;b<=hiHPS;b++){
@@ -550,9 +530,7 @@ function detectNotes(){
       var p=hpsPower[bh];
       if(p>=HPS_FLOOR){score+=p*HARM_WT[h-1];found++;}
     }
-    if(found<2)continue; // reject bins with no harmonic structure
-    // Sub-bass gain: 20–80 Hz fundamentals are quieter than their overtones
-    // in typical recordings; this corrects for that spectral bias.
+    if(found<2)continue;
     var gain;
     if(freq<30)      gain=12.0;
     else if(freq<50) gain=8.0;
@@ -565,8 +543,6 @@ function detectNotes(){
   }
 
   // ── PASS 3: peak-pick HPS + octave descent to lowest valid fundamental ─
-  // DIRECT_FLOOR: minimum direct power required at the sub-octave bin to
-  // allow descent — prevents false E2→E1 descent when only E2 is playing.
   var OCTAVE_RATIO=0.20;
   var DIRECT_FLOOR=0.008;
   var newFunds=[];
@@ -574,14 +550,11 @@ function detectNotes(){
   for(var b=loHPS+1;b<hiHPS;b++){
     if(hpsScore[b]<=0)continue;
     if(hpsScore[b]<hpsScore[b-1]||hpsScore[b]<hpsScore[b+1])continue;
-    // Sub-bin precision via parabolic interpolation
     var s0=hpsScore[b-1],s1=hpsScore[b],s2=hpsScore[b+1];
     var denom=2*(2*s1-s2-s0);
     var fineFreq=b*binHz+(denom>1e-9?binHz*(s2-s0)/denom:0);
     var peakScore=s1;
     var realFreq=fineFreq;
-
-    // Descend to sub-octave if both direct energy AND HPS score support it.
     for(var div=2;div<=3;div++){
       var subFreq=fineFreq/div;
       if(subFreq<18)break;
@@ -591,7 +564,6 @@ function detectNotes(){
         realFreq=subFreq;
       }
     }
-
     var midi=12*Math.log2(realFreq/440)+69;
     var midiR=Math.round(midi);
     var pc=((midiR%12)+12)%12;
@@ -599,17 +571,29 @@ function detectNotes(){
     newFunds.push({freq:realFreq,score:peakScore,pc:pc,octave:oct});
   }
 
-  // Best candidate per pitch class (highest HPS peak score wins)
   newFunds.sort(function(a,b){return b.score-a.score;});
   var pcBest={};
   newFunds.forEach(function(f){
     if(!pcBest[f.pc]||f.score>pcBest[f.pc].score)pcBest[f.pc]=f;
   });
 
+  // ── PASS 3b: Perfect Fifth ghost suppression ───────────────────────────
+  // A note's 3rd harmonic falls a Perfect Fifth above it (7 semitones).
+  // If pitch class ci is 7 semitones above a significantly stronger pitch
+  // class (fifthBelow), ci is a 3rd-harmonic bleed artifact and is removed.
+  // FIFTH_RATIO=2.5: the fundamental must be 2.5× louder than the ghost.
+  // Using raw per-frame HPS scores keeps genuine chords (D+A, near 1:1 ratio)
+  // unaffected while cleanly removing solo-note ghost fifths.
+  var FIFTH_RATIO=2.5;
+  var rawPcScore=new Float32Array(12);
+  for(var ci=0;ci<12;ci++){rawPcScore[ci]=pcBest[ci]?pcBest[ci].score:0;}
+  for(var ci=0;ci<12;ci++){
+    if(!rawPcScore[ci])continue;
+    var fifthBelow=(ci-7+12)%12;
+    if(rawPcScore[fifthBelow]>=rawPcScore[ci]*FIFTH_RATIO)delete pcBest[ci];
+  }
+
   // ── PASS 4: octave hysteresis lock ─────────────────────────────────────
-  // Require CHANGE_THRESH consecutive frames of a new octave before
-  // accepting the change. Prevents flicker when sub-bass fundamental
-  // amplitude varies frame-to-frame.
   var CHANGE_THRESH=5;
   var pcScores=new Float32Array(12);
   for(var ci=0;ci<12;ci++){
@@ -620,7 +604,7 @@ function detectNotes(){
     }else if(best.octave!==octaveLock[ci]){
       octaveLockCount[ci]++;
       if(octaveLockCount[ci]>=CHANGE_THRESH){octaveLock[ci]=best.octave;octaveLockCount[ci]=0;}
-      else{best.octave=octaveLock[ci];} // hold current lock
+      else{best.octave=octaveLock[ci];}
     }else{
       octaveLockCount[ci]=0;
     }
@@ -667,12 +651,11 @@ function detectNotes(){
   }
 
   candidates.sort(function(a,b){return b.snr-a.snr;});
-  if(candidates.length>4)candidates.length=4; // accuracy over quantity
+  if(candidates.length>4)candidates.length=4;
 
   candidates.forEach(function(c){
     var n=NOTES[c.idx];
     var best=pcBest[c.idx];
-    // Use current-frame octave if available; fall back to last locked octave
     var oct=best?best.octave:(octaveLock[c.idx]!==null?octaveLock[c.idx]:'');
     var intensity=Math.min(1,Math.max(0.15,c.norm*0.85+0.15));
     rawDetected.set(n,{name:n,octave:oct,cents:0,intensity:intensity});
