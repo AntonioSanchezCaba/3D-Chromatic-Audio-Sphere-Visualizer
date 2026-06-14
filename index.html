@@ -397,10 +397,42 @@ toggleBtn.addEventListener('click',togglePanel);
 var audioCtx,analyser,freqData,timeData,lpFilter,audioEl,audioSrc,stream,active=false;
 var ytActive=false,ytFrozen=false,ytBeat=0;
 var yinDiff=null,yinCmnd=null;
+var watchdogTimer=null;
+
+function resumeAudioCtx(){
+  if(audioCtx&&audioCtx.state!=='running')audioCtx.resume().catch(function(){});
+}
+
+// Watchdog: every 2 s, ensure AudioContext is running and stream is healthy.
+// Chrome suspends AudioContext on tab blur/power-saving without any warning,
+// which causes the analyser to silently stop producing data.
+function startWatchdog(){
+  stopWatchdog();
+  watchdogTimer=setInterval(function(){
+    if(!active)return;
+    resumeAudioCtx();
+    if(stream){
+      var tracks=stream.getAudioTracks();
+      if(!tracks.length||tracks[0].readyState==='ended'){stopAll();}
+    }
+  },2000);
+}
+
+function stopWatchdog(){
+  if(watchdogTimer){clearInterval(watchdogTimer);watchdogTimer=null;}
+}
+
+// Resume immediately when the user returns to the tab or window
+document.addEventListener('visibilitychange',function(){
+  if(!document.hidden&&active)resumeAudioCtx();
+});
+window.addEventListener('focus',function(){if(active)resumeAudioCtx();});
 
 function mkAnalyser(){
   if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   audioCtx.resume();
+  // Re-attach onstatechange each time we (re)create the context
+  audioCtx.onstatechange=function(){if(active)resumeAudioCtx();};
   // Low-pass filter attenuates harmonics above ~2800 Hz before analysis
   lpFilter=audioCtx.createBiquadFilter();
   lpFilter.type='lowpass';
@@ -665,6 +697,7 @@ var isMobile=/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 var canCapture=!isMobile&&!!(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia);
 
 function stopAll(){
+  stopWatchdog();
   ytActive=false;ytFrozen=false;
   if(stream){stream.getTracks().forEach(function(t){t.stop();});stream=null;}
   if(audioEl)audioEl.pause();
@@ -703,6 +736,7 @@ function captureTab(triggerBtn){
     audioCtx.resume();
     audioCtx.createMediaStreamSource(stream).connect(lpFilter);
     active=true;
+    startWatchdog();
     stream.getAudioTracks()[0].onended=stopAll;
     stopBtn.disabled=false;
     lvEl.innerHTML='<div class="live"><div class="pd"></div>Detecting notes&hellip;</div>';
@@ -736,9 +770,15 @@ playBtn.addEventListener('click',function(){
   if(!audioEl)return;
   if(audioCtx.state==='suspended')audioCtx.resume();
   audioEl.play();active=true;
+  startWatchdog();
   lvEl.innerHTML='<div class="live"><div class="pd"></div>Playing&hellip;</div>';lvEl.style.display='block';
 });
-pauseBtn.addEventListener('click',function(){if(audioEl)audioEl.pause();active=false;lvEl.style.display='none';});
+pauseBtn.addEventListener('click',function(){
+  if(audioEl)audioEl.pause();
+  active=false;
+  stopWatchdog();
+  lvEl.style.display='none';
+});
 
 // ---- YOUTUBE ----
 var ytPlayer=null,ytApiReady=false;
