@@ -235,8 +235,10 @@ function hsl2rgb(h,s,l){
   }
   return{r:r,g:g,b:b};
 }
+
+// l=0.62 so note colors read clearly through the Phong lighting
 var NOTE_RGB={};
-NOTES.forEach(function(n){NOTE_RGB[n]=hsl2rgb(NOTE_HUE[n],1,0.55);});
+NOTES.forEach(function(n){NOTE_RGB[n]=hsl2rgb(NOTE_HUE[n],1,0.62);});
 
 var wEl=document.getElementById('wheel');
 NOTES.forEach(function(n){
@@ -458,9 +460,6 @@ function idleVisualize(t){
   sMat.emissiveIntensity=1.0+Math.sin(t*1.4)*0.15;
 }
 
-// Procedural animation that runs while a YouTube video is playing.
-// Uses a ~60 BPM synthetic beat and a faster hue sweep to look energetic
-// without requiring real audio data (which is blocked by browser CORS).
 function ytVisualize(t){
   var rawBeat=Math.pow(Math.max(0,Math.sin(t*Math.PI*2.0)),10)*0.85;
   ytBeat+=(rawBeat-ytBeat)*0.22;
@@ -491,26 +490,44 @@ function ytVisualize(t){
   sMat.emissiveIntensity=1.1+ytBeat*1.0;
 }
 
+// audioVisualize: sphere color = weighted average of all active note colors.
+// Computing the mix outside the vertex loop means every vertex shares the
+// same base hue, so the note→color link is direct and obvious:
+//   C playing → whole sphere turns red
+//   A playing → whole sphere turns violet
+//   chord     → blend of the chord's note colors
+// A small per-vertex shimmer keeps the surface alive without hiding the note.
 function audioVisualize(t){
   beatPulse*=0.90;
   var posAttr=sGeo.attributes.position,colAttr=sGeo.attributes.color;
   var totalEnv=0;
   NOTES.forEach(function(n){totalEnv+=ENV[n];});
+
+  // Weighted color mix from all active notes — computed once, outside vertex loop
+  var mixR=0,mixG=0,mixB=0,mixSum=0;
+  NOTES.forEach(function(n){
+    var e=ENV[n];if(e<.005)return;
+    var rgb=NOTE_RGB[n];
+    mixR+=rgb.r*e;mixG+=rgb.g*e;mixB+=rgb.b*e;mixSum+=e;
+  });
+
   for(var i=0;i<cnt;i++){
     var i3=i*3,bx=basePos[i3],by=basePos[i3+1],bz=basePos[i3+2];
-    var theta=vertTheta[i],phi=vertPhi[i];
-    var wR=0,wG=0,wB=0,wSum=0;
-    NOTES.forEach(function(n,ni){
-      var e=ENV[n];if(e<.005)return;
-      var rgb=NOTE_RGB[n],phase=(ni/12)*Math.PI*2;
-      var weight=((Math.sin(phi*3+theta*2+t*1.8+phase)+Math.cos(phi*5-theta*3+t*1.4+phase+1.0)*.5)/1.5*.5+.5)*e;
-      wR+=rgb.r*weight;wG+=rgb.g*weight;wB+=rgb.b*weight;wSum+=weight;
-    });
+    var phi=vertPhi[i],theta=vertTheta[i];
     var fR,fG,fB;
-    if(wSum>.01){fR=Math.min(.95,wR/wSum);fG=Math.min(.95,wG/wSum);fB=Math.min(.95,wB/wSum);}
-    else{fR=smoothC[i3];fG=smoothC[i3+1];fB=smoothC[i3+2];}
-    var lerp=.18+beatPulse*.25;
-    smoothC[i3]+=(fR-smoothC[i3])*lerp;smoothC[i3+1]+=(fG-smoothC[i3+1])*lerp;smoothC[i3+2]+=(fB-smoothC[i3+2])*lerp;
+    if(mixSum>.01){
+      var bR=mixR/mixSum,bG=mixG/mixSum,bB=mixB/mixSum;
+      // Small shimmer so the surface stays alive; amplitude kept low
+      // so the note's base color always dominates
+      var sh=Math.sin(phi*5+theta*3+t*2.2)*0.06*(0.4+totalEnv);
+      fR=Math.max(0,Math.min(0.95,bR+sh));
+      fG=Math.max(0,Math.min(0.95,bG+sh));
+      fB=Math.max(0,Math.min(0.95,bB+sh));
+    }else{fR=smoothC[i3];fG=smoothC[i3+1];fB=smoothC[i3+2];}
+    var lerp=0.12+beatPulse*0.30;
+    smoothC[i3]+=(fR-smoothC[i3])*lerp;
+    smoothC[i3+1]+=(fG-smoothC[i3+1])*lerp;
+    smoothC[i3+2]+=(fB-smoothC[i3+2])*lerp;
     colAttr.setXYZ(i,smoothC[i3],smoothC[i3+1],smoothC[i3+2]);
     var disp=0;
     if(totalEnv>.01){
@@ -521,6 +538,8 @@ function audioVisualize(t){
     var sc=1+disp;posAttr.setXYZ(i,bx*sc,by*sc,bz*sc);
   }
   posAttr.needsUpdate=true;colAttr.needsUpdate=true;
+
+  // Glow sphere and emissive follow dominant note color
   var domNote=NOTES.reduce(function(a,b){return ENV[a]>ENV[b]?a:b;});
   if(ENV[domNote]>.05){
     var rgb=NOTE_RGB[domNote];
@@ -574,7 +593,6 @@ function animate(ts){
   if(active){audioVisualize(t);}
   else if(ytActive&&!ytFrozen){ytVisualize(t);}
   else if(!ytFrozen){idleVisualize(t);}
-  // ytFrozen with no active audio: sphere stays frozen (no vertex updates)
   updateUI();
   var totalEnv=active?NOTES.reduce(function(s,n){return s+ENV[n];},0):0;
   var target=.0014+beatPulse*.015+(ytActive&&!ytFrozen?ytBeat*.008:0)+totalEnv*.0005;
@@ -598,7 +616,6 @@ var isMobile=/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 var canCapture=!isMobile&&!!(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia);
 
 function stopAll(){
-  // Reset yt state before pausing player to avoid onStateChange race condition
   ytActive=false;ytFrozen=false;
   if(stream){stream.getTracks().forEach(function(t){t.stop();});stream=null;}
   if(audioEl)audioEl.pause();
@@ -670,9 +687,6 @@ var ytPlayer=null,ytApiReady=false;
 (function(){var s=document.createElement('script');s.src='https://www.youtube.com/iframe_api';document.head.appendChild(s);})();
 window.onYouTubeIframeAPIReady=function(){ytApiReady=true;};
 
-// Called by the YT IFrame player when playback state changes.
-// PLAYING (1) → start ytVisualize; PAUSED (2) → freeze sphere;
-// ENDED (0) / UNSTARTED (-1) → return to idle.
 function handleYtState(state){
   if(state===1){
     if(!active){
@@ -682,7 +696,6 @@ function handleYtState(state){
       stopBtn.disabled=false;
     }
   }else if(state===2){
-    // Only freeze if we were already tracking this video
     if(!active&&ytActive){
       ytFrozen=true;
       lvEl.innerHTML='<div class="live" style="border-color:rgba(255,200,0,.2);background:rgba(255,200,0,.05);color:rgba(255,220,80,.85)"><div class="pd" style="background:#ffd700;animation:none;opacity:0.6"></div>YouTube paused &mdash; sphere frozen</div>';
