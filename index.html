@@ -401,7 +401,10 @@ var chromaSmooth=new Float32Array(12);
 var noiseEst=new Float32Array(12);
 var notePersist=new Int32Array(12);
 var noteOnset=new Uint8Array(12);
-var PERSIST_FRAMES=8;
+
+// FIX 4: PERSIST_FRAMES 8 → 3  (cleaner note transitions on scales)
+var PERSIST_FRAMES=3;
+
 var hpsPower=null,hpsScore=null;
 var octaveLock=new Array(12).fill(null);
 var octaveLockCount=new Int32Array(12);
@@ -441,7 +444,10 @@ function mkAnalyser(){
   lpFilter.Q.value=0.5;
   analyser=audioCtx.createAnalyser();
   analyser.fftSize=32768;
-  analyser.smoothingTimeConstant=0.80;
+
+  // FIX 2: smoothingTimeConstant 0.80 → 0.55  (faster note transitions)
+  analyser.smoothingTimeConstant=0.55;
+
   analyser.minDecibels=-100;
   analyser.maxDecibels=-10;
   freqData=new Uint8Array(analyser.frequencyBinCount);
@@ -458,42 +464,24 @@ function mkAnalyser(){
 }
 
 var ENV={};NOTES.forEach(function(n){ENV[n]=0;});
-var ATTACK=0.30,DECAY=0.06;
-var smoothEnergy=0,beatPulse=0;
+var ATTACK=0.30;
 
+// FIX 5: DECAY 0.06 → 0.12  (old notes fade faster, cleaner scale)
+var DECAY=0.12;
+
+var smoothEnergy=0,beatPulse=0;
 var rawDetected=new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// detectNotes — HPS fundamental estimator
+// detectNotes — HPS fundamental estimator (fixed)
 //
-// Each FFT bin maps directly to exactly one pitch class via its frequency;
-// there is no downward frequency division / sub-harmonic folding.
-// To confirm a candidate fundamental at frequency f the algorithm looks
-// UP in the spectrum at 2f, 3f, 4f, 5f, 6f (harmonic series verification).
-//
-// PASS 1  Build linear power spectrum (20 Hz – 3 kHz)
-//
-// PASS 2  HPS score(b) — upward harmonic lookup only
-//   h=1 checked separately as the "direct fundamental" flag (hasFund).
-//   h=2..6 look up power[b·h] — never divide b.
-//   minFound = hasFund ? 2 : 4
-//   Without direct energy at bin b, 4 confirmed harmonics are required.
-//   This blocks ghost sub-bass candidates whose only matches come from
-//   a real note's harmonics coincidentally falling on their overtone grid
-//   (e.g. F2 at 87 Hz has no direct energy when C4 is playing; its only
-//   hits are h=3→261 Hz and h=6→522 Hz, giving found=2 < 4 → rejected).
-//
-// PASS 3  Peak-pick HPS → octave descent (DIRECT_FLOOR gated)
-//
-// PASS 3b Perfect Fifth suppression — bidirectional
-//   Ghost notes appear both above (D→A: A is D's 3rd harmonic, +7 st)
-//   and below (C→F: F's 3rd harmonic is C, so C playing causes ghost F
-//   7 st below C) a played note. Both directions are now suppressed:
-//   delete pcBest[ci] if rawPcScore[ci±7] >= FIFTH_RATIO × rawPcScore[ci].
-//
-// PASS 4  Octave hysteresis lock (5-frame gate)
-// PASS 5  Temporal smoothing + adaptive noise floor
-// PASS 6  SNR confidence + hysteresis + 8-frame persistence + top-4
+// FIXES APPLIED vs original:
+//   FIX 1: FIFTH_RATIO 2.5 → 6.0  — stops C suppressing F, G suppressing D,
+//           A suppressing E (all perfect-fifth pairs in C major scale)
+//   FIX 2: smoothingTimeConstant 0.55  (in mkAnalyser above)
+//   FIX 3: candidates.length > 6  (was 4 — allows full chords / scale tones)
+//   FIX 4: PERSIST_FRAMES 3  (declared above)
+//   FIX 5: DECAY 0.12  (declared above)
 // ─────────────────────────────────────────────────────────────────────────────
 function detectNotes(){
   if(!analyser||!active)return;
@@ -506,13 +494,13 @@ function detectNotes(){
 
   analyser.getFloatFrequencyData(freqDataFloat);
   var sr=audioCtx.sampleRate;
-  var binHz=sr/analyser.fftSize;         // ~1.35 Hz/bin at 44100/32768
+  var binHz=sr/analyser.fftSize;
   var numBins=analyser.frequencyBinCount;
   var minDb=analyser.minDecibels;
   var dbRange=analyser.maxDecibels-minDb;
   var loB=Math.max(1,Math.floor(20/binHz));
 
-  // ── PASS 1: linear power spectrum 20 Hz – 3 kHz ───────────────────────
+  // PASS 1: linear power spectrum 20 Hz – 3 kHz
   var hiPow=Math.min(Math.ceil(3000/binHz),numBins-1);
   for(var b=0;b<=hiPow;b++)hpsPower[b]=0;
   for(var b=loB;b<=hiPow;b++){
@@ -522,11 +510,7 @@ function detectNotes(){
     hpsPower[b]=nn*nn;
   }
 
-  // ── PASS 2: HPS — upward harmonic lookup, direct-fundamental gate ─────
-  // Each bin maps to exactly one pitch class (no frequency division).
-  // h=1 is the candidate fundamental; h=2..6 look UP at b*h.
-  // Bins with no direct energy (hasFund=false) must have 4+ harmonic
-  // confirmations to pass — this eliminates ghost sub-bass peaks.
+  // PASS 2: HPS — upward harmonic lookup, direct-fundamental gate
   var loHPS=loB;
   var hiHPS=Math.min(Math.ceil(600/binHz),numBins-1);
   var HARM_WT=[1.0,0.80,0.40,0.35,0.25,0.15];
@@ -534,25 +518,17 @@ function detectNotes(){
   for(var b=loHPS;b<=hiHPS;b++)hpsScore[b]=0;
 
   for(var b=loHPS;b<=hiHPS;b++){
-    var freq=b*binHz;
     var score=0,found=0;
-
-    // h=1: direct fundamental — no division
     var hasFund=hpsPower[b]>=HPS_FLOOR;
     if(hasFund){score+=hpsPower[b]*HARM_WT[0];found++;}
-
-    // h=2..6: look UP the spectrum to verify harmonic series
     for(var h=2;h<=6;h++){
       var bh=Math.round(b*h);
       if(bh>=numBins)break;
       var p=hpsPower[bh];
       if(p>=HPS_FLOOR){score+=p*HARM_WT[h-1];found++;}
     }
-
-    // Without a real fundamental bin, demand 4 harmonic witnesses.
-    // With a real fundamental, 2 suffice (preserves weak sub-bass notes).
     if(found<(hasFund?2:4))continue;
-
+    var freq=b*binHz;
     var gain;
     if(freq<30)      gain=12.0;
     else if(freq<50) gain=8.0;
@@ -564,7 +540,7 @@ function detectNotes(){
     hpsScore[b]=score*gain;
   }
 
-  // ── PASS 3: peak-pick HPS + octave descent to lowest valid fundamental ─
+  // PASS 3: peak-pick HPS + octave descent
   var OCTAVE_RATIO=0.20;
   var DIRECT_FLOOR=0.008;
   var newFunds=[];
@@ -599,15 +575,13 @@ function detectNotes(){
     if(!pcBest[f.pc]||f.score>pcBest[f.pc].score)pcBest[f.pc]=f;
   });
 
-  // ── PASS 3b: Perfect Fifth ghost suppression — bidirectional ──────────
-  // Ghost notes appear in two directions relative to the real note:
-  //   +7 semitones: the real note's 3rd harmonic (e.g. D played → A ghost)
-  //   -7 semitones: the real note is the ghost's 3rd harmonic
-  //                 (e.g. C played → F ghost, because F×3 = C)
-  // Suppress ci if either neighbour (ci±7) scores >= FIFTH_RATIO × ci.
-  // Raw per-frame HPS scores are used so genuine chords (ratio ~1:1)
-  // are never suppressed.
-  var FIFTH_RATIO=2.5;
+  // PASS 3b: Perfect Fifth ghost suppression
+  // FIX 1: FIFTH_RATIO 2.5 → 6.0
+  // Rationale: in C major, every note has a perfect-fifth neighbour also IN
+  // the scale (C↔G, D↔A, E↔B, F↔C, G↔D, A↔E).  With ratio=2.5 genuine
+  // scale notes were suppressing each other.  6.0 only removes true ghost
+  // harmonics (which score >>6× the real fundamental).
+  var FIFTH_RATIO=6.0;
   var rawPcScore=new Float32Array(12);
   for(var ci=0;ci<12;ci++){rawPcScore[ci]=pcBest[ci]?pcBest[ci].score:0;}
   for(var ci=0;ci<12;ci++){
@@ -620,7 +594,7 @@ function detectNotes(){
     }
   }
 
-  // ── PASS 4: octave hysteresis lock ────────────────────────────────────
+  // PASS 4: octave hysteresis lock
   var CHANGE_THRESH=5;
   var pcScores=new Float32Array(12);
   for(var ci=0;ci<12;ci++){
@@ -638,7 +612,7 @@ function detectNotes(){
     pcScores[ci]=best.score;
   }
 
-  // ── PASS 5: temporal smoothing + adaptive noise floor ─────────────────
+  // PASS 5: temporal smoothing + adaptive noise floor
   for(var ci=0;ci<12;ci++){
     chromaSmooth[ci]=chromaSmooth[ci]*0.55+pcScores[ci]*0.45;
     var rate=chromaSmooth[ci]>noiseEst[ci]?0.01:0.10;
@@ -646,7 +620,7 @@ function detectNotes(){
     noiseEst[ci]=Math.max(noiseEst[ci],1e-7);
   }
 
-  // ── PASS 6: SNR confidence + hysteresis + 8-frame persistence + top-4 ─
+  // PASS 6: SNR + hysteresis + persistence + top-N
   var maxSNR=0;
   var snr=new Float32Array(12);
   for(var ci=0;ci<12;ci++){
@@ -678,7 +652,9 @@ function detectNotes(){
   }
 
   candidates.sort(function(a,b){return b.snr-a.snr;});
-  if(candidates.length>4)candidates.length=4;
+
+  // FIX 3: limit raised from 4 → 6 so full chords and scale runs show correctly
+  if(candidates.length>6)candidates.length=6;
 
   candidates.forEach(function(c){
     var n=NOTES[c.idx];
