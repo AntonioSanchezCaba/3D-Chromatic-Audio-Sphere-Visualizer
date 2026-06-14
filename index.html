@@ -431,7 +431,6 @@ window.addEventListener('focus',function(){if(active)resumeAudioCtx();});
 function mkAnalyser(){
   if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   audioCtx.resume();
-  // Re-attach onstatechange each time we (re)create the context
   audioCtx.onstatechange=function(){if(active)resumeAudioCtx();};
   // Low-pass filter attenuates harmonics above ~2800 Hz before analysis
   lpFilter=audioCtx.createBiquadFilter();
@@ -455,8 +454,8 @@ function freq2note(f){
 }
 var rawDetected=new Map();
 
-// YIN pitch detection — finds fundamental period in time domain,
-// immune to harmonic confusion that plagues FFT peak-picking.
+// yinPitch() — monophonic fundamental detector, kept for single-instrument use.
+// Not called by detectNotes() which uses a polyphonic chromagram instead.
 function yinPitch(){
   if(!analyser||!active||!timeData)return -1;
   analyser.getFloatTimeDomainData(timeData);
@@ -472,7 +471,6 @@ function yinPitch(){
     yinDiff=new Float32Array(TAU_MAX+1);
     yinCmnd=new Float32Array(TAU_MAX+1);
   }
-  // Cumulative mean normalised difference function (YIN steps 1+2)
   var runSum=0;
   yinCmnd[0]=1;
   for(var tau=1;tau<=TAU_MAX;tau++){
@@ -482,7 +480,6 @@ function yinPitch(){
     runSum+=d;
     yinCmnd[tau]=runSum>0?d*tau/runSum:1;
   }
-  // Find first local minimum below threshold (YIN step 3)
   var bestTau=TAU_MIN;
   while(bestTau<TAU_MAX){
     if(yinCmnd[bestTau]<0.15){
@@ -492,7 +489,6 @@ function yinPitch(){
     bestTau++;
   }
   if(bestTau>=TAU_MAX)return -1;
-  // Parabolic interpolation for sub-sample accuracy (YIN step 4)
   var betterTau=bestTau;
   if(bestTau>0&&bestTau<TAU_MAX){
     var s0=yinCmnd[bestTau-1],s1=yinCmnd[bestTau],s2=yinCmnd[bestTau+1];
@@ -502,28 +498,65 @@ function yinPitch(){
   return sr/betterTau;
 }
 
+// Harmonic Pitch Class Profile (chromagram) — polyphonic note detection.
+// For each FFT bin, squared amplitude votes for its pitch class.
+// Sub-harmonic folding: a bin at f also votes for pc(f/2) and pc(f/3)
+// with decreasing weights, so overtones reinforce their fundamental's
+// pitch class rather than lighting up as spurious separate notes.
+// Adaptive threshold filters uniform drum/noise energy and surfaces the
+// 2-5 strongest note classes in a full mix.
 function detectNotes(){
   if(!analyser||!active)return;
-  // FFT still used for beat/energy detection only
   analyser.getByteFrequencyData(freqData);
+
+  // Beat/energy detection (unchanged)
   var energy=0;
   for(var ei=1;ei<80;ei++)energy+=freqData[ei];energy/=80;
-  var diff=energy-smoothEnergy;smoothEnergy+=(energy-smoothEnergy)*.15;
-  if(diff>22)beatPulse=Math.min(1,diff/60);
+  var eDiff=energy-smoothEnergy;smoothEnergy+=(energy-smoothEnergy)*.15;
+  if(eDiff>22)beatPulse=Math.min(1,eDiff/60);
+
   rawDetected.clear();
-  var pitch=yinPitch();
-  if(pitch>55&&pitch<1800){
-    var info=freq2note(pitch);
-    if(Math.abs(info.cents)<45){
-      var sr=audioCtx.sampleRate;
-      var binIdx=Math.round(pitch*analyser.fftSize/sr);
-      binIdx=Math.max(0,Math.min(freqData.length-1,binIdx));
-      var intensity=Math.min(1,Math.max(0,(freqData[binIdx]-30)/200));
-      if(intensity>0.015){
-        rawDetected.set(info.name,{name:info.name,octave:info.octave,cents:info.cents,intensity:intensity});
-      }
+  var sr=audioCtx.sampleRate;
+  var binHz=sr/analyser.fftSize;
+
+  // Accumulate power into 12 pitch-class bins across A1 (55 Hz) – C7 (2100 Hz)
+  var chroma=new Float32Array(12);
+  var hDivs=[1,2,3];       // fundamental, sub-octave, sub-twelfth
+  var hWts=[1.0,0.50,0.25];
+  var lo=Math.max(1,Math.floor(55/binHz));
+  var hi=Math.min(Math.ceil(2100/binHz),freqData.length-1);
+
+  for(var b=lo;b<=hi;b++){
+    var v=freqData[b]/255;
+    if(v<0.06)continue;                       // skip noise floor
+    for(var h=0;h<3;h++){
+      var fh=(b*binHz)/hDivs[h];
+      if(fh<40)break;
+      var midi=12*Math.log2(fh/440)+69;
+      var pclass=((Math.round(midi)%12)+12)%12;
+      chroma[pclass]+=v*v*hWts[h];
     }
   }
+
+  // Adaptive threshold: note must exceed the chroma mean by 40%
+  // AND be within 70% of the peak (shows ~2-5 dominant notes in a mix)
+  var maxC=0,sumC=0;
+  for(var ci=0;ci<12;ci++){sumC+=chroma[ci];if(chroma[ci]>maxC)maxC=chroma[ci];}
+  if(maxC<0.002){
+    NOTES.forEach(function(n){ENV[n]*=(1-DECAY);if(ENV[n]<.005)ENV[n]=0;});
+    return;
+  }
+  var meanC=sumC/12;
+  var thr=Math.max(meanC*1.4,maxC*0.30);
+
+  NOTES.forEach(function(n,ni){
+    var c=chroma[ni];
+    if(c>thr){
+      var intensity=Math.min(1,(c-thr)/(maxC-thr+1e-9)*0.65+0.35);
+      rawDetected.set(n,{name:n,octave:4,cents:0,intensity:intensity});
+    }
+  });
+
   NOTES.forEach(function(n){
     if(rawDetected.has(n)){ENV[n]+=(rawDetected.get(n).intensity-ENV[n])*ATTACK;}
     else{ENV[n]*=(1-DECAY);if(ENV[n]<.005)ENV[n]=0;}
@@ -654,7 +687,7 @@ function updateUI(){
       el.style.background='hsl('+h+',88%,52%)';el.style.color=(h>45&&h<200)?'#000':'#fff';
       el.style.opacity=.4+e*.6;el.style.transform='scale('+((.85+e*.2))+')';
       var oct=rawDetected.has(n)?rawDetected.get(n).octave:'';
-      el.innerHTML='<div class="ndot" style="background:rgba(0,0,0,.3)"></div>'+n+oct;
+      el.innerHTML='<div class="ndot" style="background:rgba(0,0,0,.3)"></div>'+n+(rawDetected.has(n)?'':' ');
       row.appendChild(el);
     });
   }
